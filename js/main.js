@@ -15,7 +15,7 @@ import { LibraryScreen } from './library.js';
 import { Player } from './player.js';
 import { Dialog } from './dialog.js';
 import { FilesScreen } from './files.js';
-import { getHandle, saveHandle, removeHandle } from './fileSystem.js';
+import { getHandle, saveHandle, removeHandle, getStoredFile } from './fileSystem.js';
 import { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS } from './data/library.js';
 import { parseMediaUrl } from './core/media.js';
 import { BACKGROUNDS } from './data/apps.js';
@@ -37,6 +37,7 @@ class WebBoxOS {
       youtube: $('#screen-youtube'),
       movies: $('#screen-movies'),
       files: $('#screen-files'),
+      emulators: $('#screen-emulators'),
       settings: $('#screen-settings'),
     };
     this.current = 'home';
@@ -99,8 +100,9 @@ class WebBoxOS {
     this.files = new FilesScreen({
       root: this.screens.files,
       focus: this.focus,
+      dialog: this.dialog,
       onOpenMedia: (file) => this.player.openFile(file),
-      onAddMovie: (handle, name) => this.#addMovieFromFiles(handle, name),
+      onAddMovie: (entry, name) => this.#addMovieFromFiles(entry, name),
     });
     this.settings = new SettingsScreen({
       root: this.screens.settings,
@@ -114,6 +116,7 @@ class WebBoxOS {
     this.launcher.render();
     for (const lib of Object.values(this.libraries)) lib.render();
     this.files.render();
+    this.#renderEmulators();
     this.settings.render();
     this.#applyDisplay();
     this.#bindEvents();
@@ -154,6 +157,9 @@ class WebBoxOS {
     this.sidebar.addEventListener('click', (e) => {
       const item = e.target.closest('[data-screen]');
       if (item) this.navigate(item.dataset.screen, { enter: true });
+    });
+    this.screens.emulators.addEventListener('click', (e) => {
+      if (e.target.closest('[data-act="emulators-home"]')) this.navigate('home', { enter: true });
     });
     bus.on('focus:change', () => this.#syncSidebar());
 
@@ -248,6 +254,8 @@ class WebBoxOS {
       this.settings.focusEntry();
     } else if (name === 'files') {
       this.files.focusEntry();
+    } else if (name === 'emulators') {
+      this.focus.focusFirst('#screen-emulators [data-zone="main"]');
     } else {
       this.focus.focusFirst('[data-zone="main"]');
     }
@@ -284,11 +292,25 @@ class WebBoxOS {
     if (this.dialog.isOpen) this.dialog.close({ restore: false });
     if (this.player.isOpen) this.player.close({ restore: false });
     if (this.files?.viewerOpen) this.files.closeViewer({ restore: false });
+    if (this.files?.targetOpen) this.files.closeTargetPicker();
     if (this.overlayOpen) this.closeOverlay({ restore: false });
     if (this.settings.capturing) this.settings.cancelCapture();
     this.navigate('home');
     this.screens.home.scrollTo({ top: 0 });
     this.#enterScreen('home');
+  }
+
+  #renderEmulators() {
+    this.screens.emulators.innerHTML = `
+      <h1 class="screen-title">Emuladores</h1>
+      <p class="files-sub">Tu espacio para organizar y ejecutar emuladores desde WebBox OS.</p>
+      <div class="emulators-empty">
+        <div class="emulators-empty-icon">${icon('gamepad')}</div>
+        <h2>Emuladores</h2>
+        <p>Esta sección ya está disponible en el menú lateral. La integración de núcleos y consolas se añadirá en una siguiente fase.</p>
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="emulators:home" data-act="emulators-home">${icon('home')}Volver al inicio</div>
+      </div>`;
   }
 
   // -------------------------------------------------------------- overlay
@@ -385,24 +407,34 @@ class WebBoxOS {
     try {
       const handle = await getHandle(item.fileHandleKey);
       if (!handle) throw new Error('No se encontró el archivo guardado. Vuelve a agregarlo desde Archivos.');
-      let permission = await handle.queryPermission?.({ mode: 'read' });
-      if (permission !== 'granted' && handle.requestPermission) {
-        permission = await handle.requestPermission({ mode: 'read' });
+      let file;
+      if (handle?.getFile) {
+        let permission = await handle.queryPermission?.({ mode: 'read' });
+        if (permission !== 'granted' && handle.requestPermission) {
+          permission = await handle.requestPermission({ mode: 'read' });
+        }
+        if (permission && permission !== 'granted') {
+          throw new Error('El navegador no concedió permiso de lectura. Vuelve a elegir la carpeta en Archivos.');
+        }
+        file = await handle.getFile();
+      } else {
+        file = await getStoredFile(handle);
       }
-      if (permission && permission !== 'granted') {
-        throw new Error('El navegador no concedió permiso de lectura. Vuelve a elegir la carpeta en Archivos.');
-      }
-      const file = await handle.getFile();
       this.player.openFile(file, { onDelete, title: item.title });
     } catch (err) {
       toast(err?.message || 'No se pudo abrir el archivo local.', 4500);
     }
   }
 
-  async #addMovieFromFiles(handle, name) {
+  async #addMovieFromFiles(entry, name) {
     const token = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     const key = `movie:${token}`;
-    await saveHandle(key, handle);
+    // En IndexedDB guardamos una referencia simple; OPFS y carpetas del equipo
+    // conservan su manejador nativo para poder abrir el archivo más adelante.
+    const reference = entry.backend === 'idb'
+      ? { backend: 'idb', path: entry.path, name: entry.name }
+      : entry.handle;
+    await saveHandle(key, reference);
     const result = this.libraries.movies.addFileHandle({ title: name, fileHandleKey: key });
     if (typeof result === 'string') throw new Error(result);
     toast(`Agregado a Películas: ${result.title}`);

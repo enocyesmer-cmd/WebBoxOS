@@ -42,37 +42,46 @@ doble clic. El ZIP incluye el bundle ya generado.
 El mouse también funciona (pasar el puntero enfoca, clic selecciona). Los controles remotos
 que se comportan como teclado funcionan por la columna de teclado.
 
-## Aplicación Archivos
+## Gestor de archivos
 
-La aplicación **Archivos** permite elegir una carpeta del equipo (File System Access API en
-Chrome y Edge), explorar sus subcarpetas y abrir medios locales. La pantalla presenta la ruta
-actual, cuenta los elementos y permite alternar entre **Cuadrícula** y **Lista**. Las carpetas
-aparecen antes que los archivos y cada tipo tiene un icono propio.
+El **Gestor de archivos** aparece directamente en el panel izquierdo. Permite abrir una
+carpeta del equipo con File System Access API (Chrome / Edge compatibles) o trabajar con
+el almacenamiento privado de WebBox OS cuando el navegador no ofrece esa API.
 
-- **Mando / teclado:** flechas para moverse, OK para entrar en carpetas o abrir archivos y
-  Atrás para subir un nivel. Al llegar a la carpeta raíz, Atrás vuelve al Inicio.
-- **Video y audio:** se reproducen en el reproductor existente de WebBox OS, con controles
-  navegables para el mando. Los formatos que puede decodificar dependen de Chromium y del
-  sistema operativo.
-- **Imágenes:** se abren en un visor a pantalla completa; Atrás o Cerrar vuelve a la lista.
-- **Agregar a Películas:** cada video muestra este botón. Guarda el manejador de archivo en
-  IndexedDB y una referencia en la biblioteca; no copia, renombra, elimina ni modifica el
-  archivo original. Al abrir esa entrada desde Películas, WebBox OS vuelve a solicitar permiso
-  de lectura cuando el navegador lo necesita.
+- **Almacenamiento interno:** usa OPFS cuando está disponible y IndexedDB como alternativa.
+  El contenido se conserva en el perfil del navegador y no se escribe en una carpeta del PC.
+- **Subir archivos / Subir carpeta:** importa archivos al directorio actual. Al subir una
+  carpeta se conserva la estructura relativa cuando el navegador proporciona esa información.
+- **Organización:** selecciona un elemento y utiliza Nueva carpeta, Renombrar, Copiar, Mover
+  o Eliminar. El borrado se confirma desde un cuadro de WebBox OS; mover también pregunta
+  antes de ejecutar la operación. Copiar en la misma carpeta crea una copia con sufijo.
+- **Destino:** Copiar y Mover abren un selector de carpetas navegable con mando, teclado o mouse.
+- **Lista / Cuadrícula:** cambia la presentación. Atrás sube una carpeta o cierra un visor.
+- **Video y audio:** se reproducen en el reproductor existente de WebBox OS. Los formatos
+  compatibles dependen del navegador y del sistema operativo.
+- **Imágenes:** se abren en un visor a pantalla completa.
+- **Agregar a Películas:** disponible en los archivos de video. En carpetas del equipo y OPFS
+  se guarda el manejador persistente; en la alternativa IndexedDB se guarda una referencia
+  interna. No se copia el archivo al añadirlo a la biblioteca.
 
-La exploración es **solo lectura**. No hay acciones para crear, borrar, renombrar o mover archivos.
-El selector de carpetas requiere un navegador compatible y un contexto seguro admitido por él
-(HTTPS o localhost). Al abrir mediante doble clic, el selector depende de que esa versión del
-navegador trate `file://` como contexto local confiable; si no aparece, ejecuta WebBox OS por
-HTTP en `localhost`. El permiso lo concede el usuario desde el selector del navegador.
+Las operaciones de crear, renombrar, copiar, mover y eliminar en una carpeta del equipo
+requieren permisos de escritura concedidos por el navegador. En almacenamiento interno esas
+operaciones solo afectan a los datos de WebBox OS. Los archivos importados pueden ocupar
+espacio del almacenamiento web y están sujetos a la cuota del navegador; para contenido muy
+grande se recomienda utilizar una carpeta del equipo cuando sea compatible.
+
+## Emuladores
+
+**Emuladores** aparece debajo de Gestor de archivos en el panel izquierdo. Por ahora es una
+sección de entrada preparada en la navegación; todavía no incorpora núcleos ni emuladores.
 
 ## Estructura
 
     index.html            estructura y pantallas
     css/                  main · launcher · navigation · settings · media · files
     js/main.js            arranque, router, overlay, reloj e integración de pantallas
-    js/files.js           explorador de carpetas y visor de imágenes
-    js/fileSystem.js      persistencia de manejadores y helpers de File System Access API
+    js/files.js           gestor de archivos, operaciones y selectores de destino
+    js/fileSystem.js      adaptadores de File System Access, OPFS e IndexedDB
     js/player.js          reproductor de YouTube, video y audio
     js/core/              events · storage · config · focus · media
     js/input/             keyboard · gamepad
@@ -91,9 +100,9 @@ HTTP en `localhost`. El permiso lo concede el usuario desde el selector del nave
     python3 tools/build.py
 
 Las pruebas de lógica cubren foco espacial, mapeo y repetición de mando, conexión/desconexión,
-teclado y análisis de enlaces multimedia. También se probó en Chromium la pantalla Archivos
-con manejadores simulados: selección de carpeta, navegación, lista/cuadrícula, visor de imagen,
-reproductor de audio y alta / apertura de un video desde Películas.
+teclado y análisis de enlaces multimedia. También se deben comprobar en un navegador local las operaciones de archivo con permisos reales.
+El entorno de desarrollo puede bloquear el selector nativo del sistema; en ese caso, usa el
+almacenamiento interno para probar importación y organización de archivos.
 
 ## YouTube y Películas
 
@@ -110,4 +119,3 @@ campo abre el teclado del sistema).
   `assets/movies/mi-pelicula.mp4`) y referencias locales agregadas desde Archivos.
 - Lo agregado desde la interfaz queda guardado en el navegador. Para dejar contenido fijo en el
   código, edita `js/data/library.js`. "Eliminar" está dentro del reproductor.
-

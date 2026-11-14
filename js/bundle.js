@@ -885,6 +885,8 @@ const PATHS = {
   book: '<path d="M5 4.5h11a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/>',
   youtube: '<rect x="3" y="5.5" width="18" height="13" rx="4"/><path d="m10.2 9.2 4.6 2.8-4.6 2.8z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
+  move: '<path d="M5 12h14M13 6l6 6-6 6"/><path d="M5 5v14"/>',
   trash: '<path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l.8 12.5h9.4L17.5 7M10 11v5M14 11v5"/>',
   pause: '<rect x="7" y="5" width="3.5" height="14" rx="1"/><rect x="13.5" y="5" width="3.5" height="14" rx="1"/>',
   playsolid: '<path d="M8 5.5v13l11-6.5z"/>',
@@ -2364,176 +2366,385 @@ class Dialog {
     Object.assign(exports, { Dialog });
   };
   __modules["js/fileSystem.js"] = function (module, exports, __require) {
-// fileSystem.js – Helpers for File System Access API with fallback to OPFS/IndexedDB
-// Sólo lectura para la versión base; las operaciones CRUD se implementan más abajo.
-// Documentación: https://developer.mozilla.org/en-US/docs/Web/API/File_System_Access_API
+// fileSystem.js – almacenamiento local para WebBox OS.
+// Usa File System Access API cuando el usuario elige una carpeta del equipo.
+// Si no está disponible, usa OPFS y, como último recurso, IndexedDB.
 
-// IndexedDB wrapper para almacenar manejadores (FileSystemDirectoryHandle/FileSystemFileHandle)
 const DB_NAME = 'webbox-fs';
-const STORE_NAME = 'handles';
+const DB_VERSION = 2;
+const HANDLE_STORE = 'handles';
+const NODE_STORE = 'nodes';
+let dbPromise = null;
 
 function openDb() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: 'path' });
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(HANDLE_STORE)) {
+        db.createObjectStore(HANDLE_STORE, { keyPath: 'path' });
+      }
+      if (!db.objectStoreNames.contains(NODE_STORE)) {
+        db.createObjectStore(NODE_STORE, { keyPath: 'path' });
       }
     };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => {
+      dbPromise = null;
+      reject(request.error);
+    };
+    request.onblocked = () => reject(new Error('Cierra otras pestañas de WebBox OS para actualizar el almacenamiento.'));
+  });
+  return dbPromise;
+}
+
+function transactionDone(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('La operación de almacenamiento fue cancelada.'));
+  });
+}
+
+function requestResult(request) {
+  return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
 }
 
-/** Guarda un manejador serializable bajo una clave de ruta */
+/** Guarda un manejador o una referencia interna bajo una clave persistente. */
 async function saveHandle(path, handle) {
   const db = await openDb();
-  const tx = db.transaction(STORE_NAME, 'readwrite');
-  tx.objectStore(STORE_NAME).put({ path, handle });
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const tx = db.transaction(HANDLE_STORE, 'readwrite');
+  tx.objectStore(HANDLE_STORE).put({ path, handle });
+  await transactionDone(tx);
 }
 
-/** Recupera un manejador previamente guardado */
+/** Recupera un manejador o una referencia interna previamente guardada. */
 async function getHandle(path) {
   const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const req = db.transaction(STORE_NAME).objectStore(STORE_NAME).get(path);
-    req.onsuccess = () => resolve(req.result?.handle);
-    req.onerror = () => reject(req.error);
-  });
+  const tx = db.transaction(HANDLE_STORE, 'readonly');
+  const record = await requestResult(tx.objectStore(HANDLE_STORE).get(path));
+  return record?.handle;
 }
 
-/** Elimina un manejador guardado (no elimina el archivo del equipo). */
+/** Elimina una referencia persistida, sin borrar el archivo de origen. */
 async function removeHandle(path) {
   const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).delete(path);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const tx = db.transaction(HANDLE_STORE, 'readwrite');
+  tx.objectStore(HANDLE_STORE).delete(path);
+  await transactionDone(tx);
 }
 
-/** Solicita al usuario una carpeta y la persiste */
+function supportsFileSystemAccess() {
+  return typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
+}
+
+/** Permite elegir una carpeta real del equipo. */
 async function requestRootDirectory() {
-  if (!window.showDirectoryPicker) {
-    throw new Error('File System Access API no está disponible en este navegador.');
+  if (!supportsFileSystemAccess()) {
+    throw new Error('Este navegador no permite abrir carpetas del equipo. Usa el almacenamiento interno.');
   }
-  const handle = await window.showDirectoryPicker();
-  // guardamos bajo la clave "root" para poder volver a abrirla sin preguntar
+  const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+  const root = { backend: 'native', handle, name: handle.name || 'Carpeta', path: '/', kind: 'directory' };
   await saveHandle('root', handle);
-  return handle;
+  return root;
 }
 
-/** Obtiene la carpeta raíz persistida o pide una nueva */
+/** Abre el almacenamiento privado de WebBox OS (OPFS o IndexedDB). */
+async function requestInternalDirectory() {
+  try {
+    if (navigator.storage?.getDirectory) {
+      const storageRoot = await navigator.storage.getDirectory();
+      const handle = await storageRoot.getDirectoryHandle('WebBox OS', { create: true });
+      return { backend: 'opfs', handle, name: 'Almacenamiento interno', path: '/', kind: 'directory' };
+    }
+  } catch (error) {
+    console.warn('[WebBox OS] OPFS no disponible; se usará IndexedDB.', error);
+  }
+  await openDb();
+  return { backend: 'idb', handle: null, name: 'Almacenamiento interno', path: '/', kind: 'directory' };
+}
+
+/** Obtiene una raíz local previamente guardada, cuando el navegador lo permite. */
 async function getRootDirectory() {
-  let handle = await getHandle('root');
-  if (handle) return handle;
-  // si no está guardada, solicitar al usuario
-  return await requestRootDirectory();
+  const handle = await getHandle('root');
+  return handle
+    ? { backend: 'native', handle, name: handle.name || 'Carpeta', path: '/', kind: 'directory' }
+    : null;
 }
 
-/** Lista entradas (archivos + carpetas) del directorio dado */
-async function listEntries(dirHandle) {
+function directoryHandle(directory) {
+  if (!directory || !['native', 'opfs'].includes(directory.backend) || !directory.handle) {
+    throw new Error('La carpeta seleccionada no está disponible.');
+  }
+  return directory.handle;
+}
+
+function joinPath(parentPath, name, kind) {
+  const base = parentPath === '/' ? '/' : `${parentPath.replace(/\/$/, '')}/`;
+  return `${base}${name}${kind === 'directory' ? '/' : ''}`;
+}
+
+function validateName(name) {
+  const value = String(name ?? '').trim();
+  if (!value) throw new Error('Escribe un nombre.');
+  if (value === '.' || value === '..' || /[\\/\0]/.test(value)) {
+    throw new Error('El nombre no puede contener / ni \\ y no puede ser . o ...');
+  }
+  return value;
+}
+
+async function idbNodes() {
+  const db = await openDb();
+  const tx = db.transaction(NODE_STORE, 'readonly');
+  return requestResult(tx.objectStore(NODE_STORE).getAll());
+}
+
+async function idbGetNode(path) {
+  const db = await openDb();
+  const tx = db.transaction(NODE_STORE, 'readonly');
+  return requestResult(tx.objectStore(NODE_STORE).get(path));
+}
+
+async function idbPutNode(node) {
+  const db = await openDb();
+  const tx = db.transaction(NODE_STORE, 'readwrite');
+  tx.objectStore(NODE_STORE).put(node);
+  await transactionDone(tx);
+}
+
+async function idbDeletePath(path, recursive = false) {
+  const db = await openDb();
+  const tx = db.transaction(NODE_STORE, 'readwrite');
+  const store = tx.objectStore(NODE_STORE);
+  const done = transactionDone(tx);
+  if (recursive) {
+    const request = store.getAll();
+    request.onsuccess = () => {
+      for (const node of request.result) {
+        if (node.path === path || node.path.startsWith(path)) store.delete(node.path);
+      }
+    };
+  } else {
+    store.delete(path);
+  }
+  await done;
+}
+
+/** Lista los elementos de una carpeta en cualquiera de los tres almacenamientos. */
+async function listEntries(directory) {
+  if (directory.backend === 'idb') {
+    const nodes = await idbNodes();
+    return nodes
+      .filter((node) => node.parentPath === directory.path)
+      .map((node) => ({ ...node, backend: 'idb', parent: directory, handle: null }));
+  }
+
   const entries = [];
-  for await (const [name, child] of dirHandle.entries()) {
-    entries.push({ name, handle: child, kind: child.kind });
+  const handle = directoryHandle(directory);
+  for await (const [name, child] of handle.entries()) {
+    const kind = child.kind;
+    entries.push({
+      name,
+      handle: child,
+      kind,
+      backend: directory.backend,
+      parent: directory,
+      path: joinPath(directory.path, name, kind),
+    });
   }
   return entries;
 }
 
-/** Crea una subcarpeta */
-async function createFolder(parentHandle, name) {
-  return await parentHandle.getDirectoryHandle(name, { create: true });
-}
-
-/** Renombra una entrada (solo posible mediante copiar‑borrar) */
-async function renameEntry(entryHandle, parentHandle, newName) {
-  // Copiar el contenido (si es carpeta) o el archivo y luego eliminar el original
-  if (entryHandle.kind === 'file') {
-    const file = await entryHandle.getFile();
-    const newHandle = await parentHandle.getFileHandle(newName, { create: true });
-    const writable = await newHandle.createWritable();
-    await writable.write(await file.arrayBuffer());
-    await writable.close();
-  } else {
-    // carpeta: crear nueva y copiar recursivamente
-    const newDir = await parentHandle.getDirectoryHandle(newName, { create: true });
-    await copyFolderRecursive(entryHandle, newDir);
+/** Comprueba que el nombre no exista en el destino. */
+async function ensureNameAvailable(directory, name) {
+  const entries = await listEntries(directory);
+  if (entries.some((entry) => entry.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+    throw new Error(`Ya existe un elemento llamado "${name}".`);
   }
-  // eliminar original
-  await parentHandle.removeEntry(entryHandle.name);
 }
 
-/** Copia recursivamente el contenido de una carpeta */
-async function copyFolderRecursive(srcHandle, dstHandle) {
-  for await (const [name, child] of srcHandle.entries()) {
-    if (child.kind === 'file') {
-      const file = await child.getFile();
-      const newFile = await dstHandle.getFileHandle(name, { create: true });
-      const writable = await newFile.createWritable();
-      await writable.write(await file.arrayBuffer());
-      await writable.close();
-    } else {
-      const newSub = await dstHandle.getDirectoryHandle(name, { create: true });
-      await copyFolderRecursive(child, newSub);
+/** Crea una subcarpeta. */
+async function createFolder(parent, name) {
+  const safeName = validateName(name);
+  await ensureNameAvailable(parent, safeName);
+  if (parent.backend === 'idb') {
+    const path = joinPath(parent.path, safeName, 'directory');
+    await idbPutNode({ path, parentPath: parent.path, name: safeName, kind: 'directory' });
+    return { backend: 'idb', path, name: safeName, kind: 'directory', parent, handle: null };
+  }
+  const handle = await directoryHandle(parent).getDirectoryHandle(safeName, { create: true });
+  return {
+    backend: parent.backend,
+    handle,
+    path: joinPath(parent.path, safeName, 'directory'),
+    name: safeName,
+    kind: 'directory',
+    parent,
+  };
+}
+
+/** Escribe un archivo en un directorio, conservando su contenido. */
+async function writeFile(parent, name, file) {
+  const safeName = validateName(name);
+  await ensureNameAvailable(parent, safeName);
+  if (parent.backend === 'idb') {
+    const path = joinPath(parent.path, safeName, 'file');
+    const blob = file instanceof Blob ? file : new Blob([file]);
+    await idbPutNode({
+      path,
+      parentPath: parent.path,
+      name: safeName,
+      kind: 'file',
+      blob,
+      size: blob.size,
+      type: blob.type || file.type || '',
+      lastModified: file.lastModified || Date.now(),
+    });
+    return { backend: 'idb', path, name: safeName, kind: 'file', parent, handle: null };
+  }
+  const handle = await directoryHandle(parent).getFileHandle(safeName, { create: true });
+  const writable = await handle.createWritable();
+  await writable.write(file);
+  await writable.close();
+  return {
+    backend: parent.backend,
+    handle,
+    path: joinPath(parent.path, safeName, 'file'),
+    name: safeName,
+    kind: 'file',
+    parent,
+  };
+}
+
+/** Devuelve un objeto File desde una entrada del explorador. */
+async function getEntryFile(entry) {
+  if (entry.backend === 'idb') {
+    const node = await idbGetNode(entry.path);
+    if (!node?.blob) throw new Error('El archivo ya no existe en el almacenamiento interno.');
+    return new File([node.blob], node.name, {
+      type: node.type || node.blob.type || '',
+      lastModified: node.lastModified || Date.now(),
+    });
+  }
+  return entry.handle.getFile();
+}
+
+/** Recupera un archivo guardado en Películas. */
+async function getStoredFile(reference) {
+  if (reference?.backend === 'idb') {
+    return getEntryFile(reference);
+  }
+  if (reference?.getFile) return reference.getFile();
+  throw new Error('No se encontró el archivo guardado. Vuelve a agregarlo desde Archivos.');
+}
+
+/** Sube archivos al almacenamiento interno; acepta rutas relativas de carpetas. */
+async function uploadFiles(root, files) {
+  let uploaded = 0;
+  for (const file of files) {
+    const relative = String(file.webkitRelativePath || file.name).replace(/\\/g, '/');
+    const parts = relative.split('/').filter(Boolean);
+    const fileName = parts.pop();
+    if (!fileName) continue;
+    let directory = root;
+    for (const folderName of parts) {
+      const existing = (await listEntries(directory)).find(
+        (entry) => entry.kind === 'directory' && entry.name === folderName,
+      );
+      directory = existing
+        ? { backend: existing.backend, handle: existing.handle, path: existing.path, name: existing.name, kind: 'directory' }
+        : await createFolder(directory, folderName);
     }
+    await writeFile(directory, fileName, file);
+    uploaded += 1;
   }
+  return uploaded;
 }
 
-/** Copia una entrada a otro directorio */
-async function copyEntry(entryHandle, targetDirHandle) {
-  if (entryHandle.kind === 'file') {
-    const file = await entryHandle.getFile();
-    const newHandle = await targetDirHandle.getFileHandle(entryHandle.name, { create: true });
-    const writable = await newHandle.createWritable();
-    await writable.write(await file.arrayBuffer());
-    await writable.close();
+async function copyNode(entry, targetDirectory, targetName = entry.name) {
+  if (entry.kind === 'file') {
+    const file = await getEntryFile(entry);
+    await writeFile(targetDirectory, targetName, file);
+    return;
+  }
+  const newDirectory = await createFolder(targetDirectory, targetName);
+  const children = await listEntries({
+    backend: entry.backend,
+    handle: entry.handle,
+    path: entry.path,
+    name: entry.name,
+    kind: 'directory',
+  });
+  for (const child of children) await copyNode(child, newDirectory);
+}
+
+/** Copia un archivo o carpeta completa al directorio de destino. */
+async function copyEntry(entry, targetDirectory, targetName = entry.name, autoRename = false) {
+  if (entry.kind === 'directory'
+      && entry.backend === targetDirectory.backend
+      && targetDirectory.path.startsWith(entry.path)) {
+    throw new Error('No puedes copiar una carpeta dentro de sí misma.');
+  }
+  let safeName = validateName(targetName);
+  if (autoRename) {
+    const names = new Set((await listEntries(targetDirectory)).map((item) => item.name.toLocaleLowerCase()));
+    if (names.has(safeName.toLocaleLowerCase())) {
+      const dot = entry.kind === 'file' ? safeName.lastIndexOf('.') : -1;
+      const base = dot > 0 ? safeName.slice(0, dot) : safeName;
+      const ext = dot > 0 ? safeName.slice(dot) : '';
+      let number = 1;
+      while (names.has(`${base} (copia${number > 1 ? ` ${number}` : ''})${ext}`.toLocaleLowerCase())) number += 1;
+      safeName = `${base} (copia${number > 1 ? ` ${number}` : ''})${ext}`;
+    }
   } else {
-    const newDir = await targetDirHandle.getDirectoryHandle(entryHandle.name, { create: true });
-    await copyFolderRecursive(entryHandle, newDir);
+    await ensureNameAvailable(targetDirectory, safeName);
   }
+  await copyNode(entry, targetDirectory, safeName);
 }
 
-/** Mueve una entrada a otro directorio (copia + elimina) */
-async function moveEntry(entryHandle, srcParentHandle, targetDirHandle) {
-  await copyEntry(entryHandle, targetDirHandle);
-  await srcParentHandle.removeEntry(entryHandle.name, { recursive: entryHandle.kind === 'directory' });
-}
-
-/** Elimina una entrada (con confirmación externa) */
-async function deleteEntry(parentHandle, name, isDirectory) {
-  await parentHandle.removeEntry(name, { recursive: isDirectory });
-}
-
-// Fallback simple para navegadores sin File System Access API: usar OPFS bajo "webbox-fallback"
-async function getFallbackRoot() {
-  const root = await navigator.storage.getDirectory();
-  return await root.getDirectoryHandle('webbox-fallback', { create: true });
-}
-
-async function fallbackUploadFiles(files) {
-  const dir = await getFallbackRoot();
-  for (const f of files) {
-    const handle = await dir.getFileHandle(f.name, { create: true });
-    const writable = await handle.createWritable();
-    await writable.write(await f.arrayBuffer());
-    await writable.close();
+/** Elimina una entrada del directorio indicado. */
+async function deleteEntry(parent, entry) {
+  if (parent.backend === 'idb') {
+    await idbDeletePath(entry.path, entry.kind === 'directory');
+    return;
   }
+  await directoryHandle(parent).removeEntry(entry.name, { recursive: entry.kind === 'directory' });
 }
-    Object.assign(exports, { saveHandle, getHandle, removeHandle, requestRootDirectory, getRootDirectory, listEntries, createFolder, renameEntry, copyEntry, moveEntry, deleteEntry, getFallbackRoot, fallbackUploadFiles });
+
+/** Renombra mediante copia + borrado para mantener compatibilidad entre backends. */
+async function renameEntry(entry, parent, newName) {
+  const safeName = validateName(newName);
+  if (safeName === entry.name) return;
+  await copyEntry(entry, parent, safeName);
+  await deleteEntry(parent, entry);
+}
+
+/** Mueve una entrada entre carpetas, incluso entre almacenamiento interno y equipo. */
+async function moveEntry(entry, sourceParent, targetDirectory) {
+  if (sourceParent.backend === targetDirectory.backend && sourceParent.path === targetDirectory.path) {
+    throw new Error('El destino ya es la carpeta actual.');
+  }
+  if (entry.kind === 'directory'
+      && entry.backend === targetDirectory.backend
+      && targetDirectory.path.startsWith(entry.path)) {
+    throw new Error('No puedes mover una carpeta dentro de sí misma.');
+  }
+  await copyEntry(entry, targetDirectory);
+  await deleteEntry(sourceParent, entry);
+}
+    Object.assign(exports, { saveHandle, getHandle, removeHandle, supportsFileSystemAccess, requestRootDirectory, requestInternalDirectory, getRootDirectory, listEntries, createFolder, writeFile, getEntryFile, getStoredFile, uploadFiles, copyEntry, deleteEntry, renameEntry, moveEntry });
   };
   __modules["js/files.js"] = function (module, exports, __require) {
 /**
- * Pantalla Archivos: explorador local de solo lectura para mando, teclado y mouse.
- * Usa File System Access API en Chromium (Chrome / Edge) y conserva la carpeta
- * seleccionada en IndexedDB mediante los helpers de js/fileSystem.js.
+ * Gestor de archivos de WebBox OS para mando, teclado y mouse.
+ * Trabaja con carpetas del equipo (File System Access API) o con almacenamiento
+ * privado OPFS/IndexedDB en navegadores que no permiten elegir carpetas.
  */
-const { requestRootDirectory, listEntries } = __require("js/fileSystem.js");
+const { supportsFileSystemAccess, requestRootDirectory, requestInternalDirectory, listEntries, createFolder, uploadFiles, getEntryFile, copyEntry, moveEntry, renameEntry, deleteEntry } = __require("js/fileSystem.js");
 const { icon } = __require("js/icons.js");
 const { esc, toast } = __require("js/ui.js");
 
@@ -2542,7 +2753,7 @@ const AUDIO_EXT = new Set(['mp3', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'flac', 'op
 const IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'avif', 'svg']);
 
 function extension(name) {
-  return String(name).split('.').pop().toLowerCase();
+  return String(name).includes('.') ? String(name).split('.').pop().toLowerCase() : '';
 }
 
 function fileType(name) {
@@ -2550,7 +2761,7 @@ function fileType(name) {
   if (VIDEO_EXT.has(ext)) return 'video';
   if (AUDIO_EXT.has(ext)) return 'audio';
   if (IMAGE_EXT.has(ext)) return 'image';
-  if (['pdf'].includes(ext)) return 'pdf';
+  if (ext === 'pdf') return 'pdf';
   if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'archive';
   if (['txt', 'md', 'doc', 'docx', 'odt', 'rtf'].includes(ext)) return 'document';
   return 'file';
@@ -2573,56 +2784,88 @@ function readableSize(bytes) {
 
 class FilesScreen {
   /**
-   * @param {{root:HTMLElement, focus:object, onOpenMedia:(file:File)=>void,
-   *   onAddMovie:(handle:FileSystemFileHandle,name:string)=>Promise<void>}} opts
+   * @param {{root:HTMLElement, focus:object, dialog:object, onOpenMedia:(file:File,name:string)=>void,
+   *   onAddMovie:(entry:object,name:string)=>Promise<void>}} opts
    */
-  constructor({ root, focus, onOpenMedia, onAddMovie }) {
+  constructor({ root, focus, dialog, onOpenMedia, onAddMovie }) {
     this.root = root;
     this.focus = focus;
+    this.dialog = dialog;
     this.onOpenMedia = onOpenMedia;
     this.onAddMovie = onAddMovie;
     this.stack = [];
+    this.rootDirectory = null;
     this.entries = [];
     this.view = 'grid';
     this.loading = false;
+    this.selectedPath = null;
     this.viewerOpen = false;
     this.viewerUrl = null;
     this.viewerReturnFid = null;
     this.viewer = document.getElementById('file-viewer');
+    this.targetPicker = null;
+    this.targetOpen = false;
+    this.targetMode = null;
+    this.targetStack = [];
 
     this.root.addEventListener('click', (e) => this.#onClick(e));
+    this.root.addEventListener('change', (e) => this.#onChange(e));
     this.viewer?.addEventListener('click', (e) => {
       if (e.target.closest('[data-act="file-viewer-close"]')) this.closeViewer();
     });
   }
 
   render() {
+    const canPick = supportsFileSystemAccess();
     this.root.innerHTML = `
-      <h1 class="screen-title">Archivos</h1>
-      <p class="files-sub">Explora carpetas y reproduce tus archivos multimedia con el mando.</p>
-      <div class="files-toolbar">
+      <h1 class="screen-title">Gestor de archivos</h1>
+      <p class="files-sub">Administra tus carpetas, organiza archivos y reproduce tu contenido con el mando.</p>
+      <div class="files-toolbar files-toolbar--primary">
+        ${canPick ? `<div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:pick" data-act="files-pick">${icon('folder')}Carpeta del equipo</div>` : ''}
         <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
-             data-fid="files:pick" data-act="files-pick">${icon('folder')}Elegir carpeta</div>
+             data-fid="files:internal" data-act="files-internal">${icon('folder')}Almacenamiento interno</div>
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:upload" data-act="files-upload">${icon('plus')}Subir archivos</div>
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:upload-folder" data-act="files-upload-folder">${icon('folder')}Subir carpeta</div>
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:new-folder" data-act="files-new-folder" aria-disabled="true">${icon('plus')}Nueva carpeta</div>
+      </div>
+      <div class="files-toolbar files-toolbar--manage">
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:rename" data-act="files-rename" aria-disabled="true">Renombrar</div>
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:copy" data-act="files-copy" aria-disabled="true">${icon('copy')}Copiar</div>
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:move" data-act="files-move" aria-disabled="true">${icon('move')}Mover</div>
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:delete" data-act="files-delete" aria-disabled="true">${icon('trash')}Eliminar</div>
         <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
              data-fid="files:up" data-act="files-up" aria-disabled="true">${icon('back')}Atrás</div>
         <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
-             data-fid="files:list" data-act="files-list">${icon('book')}Lista</div>
+             data-fid="files:list" data-act="files-list">Lista</div>
         <div class="btn is-selected" role="button" tabindex="-1" data-focusable data-zone="main"
-             data-fid="files:grid" data-act="files-grid">${icon('apps')}Cuadrícula</div>
+             data-fid="files:grid" data-act="files-grid">Cuadrícula</div>
       </div>
       <div class="files-location">
         <span class="files-location-label">Ubicación</span>
         <strong data-files-path>Sin carpeta seleccionada</strong>
         <span class="files-count" data-files-count></span>
       </div>
+      <div class="files-selection" data-files-selection>Selecciona un elemento para organizarlo.</div>
       <div class="files-content" data-files-content>
         <div class="files-empty">
           <span class="files-empty-icon">${icon('folder')}</span>
-          <h2>Selecciona una carpeta</h2>
-          <p>Elige una carpeta del equipo para ver sus archivos y subcarpetas.</p>
-          <p class="files-api-note">La lectura local está disponible en Chrome y Edge. No se modifica ningún archivo.</p>
+          <h2>Abre una ubicación</h2>
+          <p>${canPick
+            ? 'Elige una carpeta de tu equipo o abre el almacenamiento interno de WebBox OS.'
+            : 'Este navegador no permite elegir carpetas del equipo. Usa el almacenamiento interno y sube tus archivos.'}</p>
+          <p class="files-api-note">Las operaciones sobre el equipo requieren permiso del navegador. El almacenamiento interno es privado de WebBox OS.</p>
         </div>
-      </div>`;
+      </div>
+      <input data-files-input type="file" multiple hidden>
+      <input data-files-folder-input type="file" multiple webkitdirectory hidden>`;
     this.#updateToolbar();
     this.#updatePath();
   }
@@ -2631,7 +2874,15 @@ class FilesScreen {
     this.focus.focusFirst('[data-zone="main"]');
   }
 
+  closeTargetPicker() {
+    this.#closeTargetPicker();
+  }
+
   async handleBack() {
+    if (this.targetOpen) {
+      this.#closeTargetPicker();
+      return true;
+    }
     if (this.viewerOpen) {
       this.closeViewer();
       return true;
@@ -2646,9 +2897,8 @@ class FilesScreen {
   async chooseFolder() {
     if (this.loading) return;
     try {
-      const handle = await requestRootDirectory();
-      this.stack = [{ handle, name: handle.name || 'Carpeta' }];
-      await this.#readCurrent();
+      const root = await requestRootDirectory();
+      this.#setRoot(root);
     } catch (err) {
       if (err?.name === 'AbortError') return;
       const message = err?.message || 'No se pudo abrir la carpeta.';
@@ -2657,9 +2907,30 @@ class FilesScreen {
     }
   }
 
+  async openInternal() {
+    if (this.loading) return;
+    try {
+      const root = await requestInternalDirectory();
+      this.#setRoot(root);
+      toast(root.backend === 'opfs'
+        ? 'Almacenamiento interno OPFS listo.'
+        : 'Almacenamiento interno IndexedDB listo.');
+    } catch (err) {
+      toast(`No se pudo abrir el almacenamiento interno: ${err?.message || 'error'}`, 4500);
+    }
+  }
+
+  async #setRoot(root) {
+    this.rootDirectory = root;
+    this.stack = [root];
+    this.selectedPath = null;
+    await this.#readCurrent();
+  }
+
   async goUp() {
     if (this.stack.length <= 1 || this.loading) return;
     this.stack.pop();
+    this.selectedPath = null;
     await this.#readCurrent();
   }
 
@@ -2673,11 +2944,14 @@ class FilesScreen {
     if (content) content.innerHTML = '<div class="files-empty"><h2>Abriendo carpeta…</h2><p>Obteniendo el contenido.</p></div>';
 
     try {
-      this.entries = await listEntries(current.handle);
+      this.entries = await listEntries(current);
       this.entries.sort((a, b) => {
         if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
         return a.name.localeCompare(b.name, 'es', { sensitivity: 'base', numeric: true });
       });
+      if (this.selectedPath && !this.entries.some((entry) => entry.path === this.selectedPath)) {
+        this.selectedPath = null;
+      }
       this.#renderEntries();
     } catch (err) {
       this.entries = [];
@@ -2698,7 +2972,7 @@ class FilesScreen {
 
     if (count) count.textContent = `${this.entries.length} elemento${this.entries.length === 1 ? '' : 's'}`;
     if (!this.entries.length) {
-      content.innerHTML = '<div class="files-empty"><h2>Esta carpeta está vacía</h2><p>No se encontraron archivos ni subcarpetas.</p></div>';
+      content.innerHTML = '<div class="files-empty"><h2>Esta carpeta está vacía</h2><p>Sube archivos o crea una carpeta para comenzar.</p></div>';
       return;
     }
 
@@ -2706,9 +2980,12 @@ class FilesScreen {
       const kind = entry.kind === 'directory' ? 'directory' : fileType(entry.name);
       const isVideo = kind === 'video';
       const fid = `files:item:${index}`;
-      const meta = entry.kind === 'directory' ? 'Carpeta' : this.#metaLabel(kind, entry.name);
+      const selected = entry.path === this.selectedPath;
+      const meta = entry.kind === 'directory'
+        ? 'Carpeta'
+        : `${this.#metaLabel(kind, entry.name)}${Number.isFinite(entry.size) ? ` · ${readableSize(entry.size)}` : ''}`;
       return `
-        <article class="file-card${isVideo ? ' file-card--video' : ''}">
+        <article class="file-card${isVideo ? ' file-card--video' : ''}${selected ? ' is-selected' : ''}">
           <div class="file-entry" role="button" tabindex="-1" data-focusable data-zone="main"
                data-fid="${fid}" data-act="file-open" data-index="${index}"
                aria-label="${esc(entry.name)}">
@@ -2716,26 +2993,56 @@ class FilesScreen {
             <span class="file-entry-name">${esc(entry.name)}</span>
             <span class="file-entry-meta">${esc(meta)}</span>
           </div>
-          ${isVideo ? `<div class="file-card-actions">
-            <div class="btn btn--sm" role="button" tabindex="-1" data-focusable data-zone="main"
+          <div class="file-card-actions">
+            <div class="btn btn--sm${selected ? ' is-selected' : ''}" role="button" tabindex="-1" data-focusable data-zone="main"
+                 data-fid="files:select:${index}" data-act="file-select" data-index="${index}">
+              ${selected ? icon('check') : icon('apps')}${selected ? 'Seleccionado' : 'Seleccionar'}
+            </div>
+            ${isVideo ? `<div class="btn btn--sm" role="button" tabindex="-1" data-focusable data-zone="main"
                  data-fid="files:add:${index}" data-act="file-add-movie" data-index="${index}">
               ${icon('plus')}Agregar a Películas
-            </div>
-          </div>` : ''}
+            </div>` : ''}
+          </div>
         </article>`;
     }).join('');
 
     content.innerHTML = `<div class="files-${this.view}">${cards}</div>`;
+    this.#updateSelectionLabel();
   }
 
   #metaLabel(kind, name) {
     const labels = { video: 'Video', audio: 'Audio', image: 'Imagen', pdf: 'PDF', document: 'Documento', archive: 'Archivo comprimido', file: 'Archivo' };
-    return `${labels[kind] || 'Archivo'} · ${extension(name).toUpperCase()}`;
+    return `${labels[kind] || 'Archivo'}${extension(name) ? ` · ${extension(name).toUpperCase()}` : ''}`;
+  }
+
+  #selectedEntry() {
+    return this.entries.find((entry) => entry.path === this.selectedPath) ?? null;
+  }
+
+  #updateSelectionLabel() {
+    const label = this.root.querySelector('[data-files-selection]');
+    const entry = this.#selectedEntry();
+    if (label) label.textContent = entry
+      ? `Seleccionado: ${entry.name} · ${entry.kind === 'directory' ? 'Carpeta' : 'Archivo'}`
+      : 'Selecciona un elemento para organizarlo.';
   }
 
   #updateToolbar() {
-    const up = this.root.querySelector('[data-act="files-up"]');
-    if (up) up.setAttribute('aria-disabled', String(this.stack.length <= 1 || this.loading));
+    const selected = Boolean(this.#selectedEntry());
+    const current = Boolean(this.stack.length) && !this.loading;
+    const controls = {
+      'files-new-folder': current,
+      'files-rename': selected && current,
+      'files-copy': selected && current,
+      'files-move': selected && current,
+      'files-delete': selected && current,
+      'files-upload': current,
+      'files-upload-folder': current,
+      'files-up': this.stack.length > 1 && !this.loading,
+    };
+    for (const [action, enabled] of Object.entries(controls)) {
+      this.root.querySelector(`[data-act="${action}"]`)?.setAttribute('aria-disabled', String(!enabled));
+    }
     const list = this.root.querySelector('[data-act="files-list"]');
     const grid = this.root.querySelector('[data-act="files-grid"]');
     list?.classList.toggle('is-selected', this.view === 'list');
@@ -2744,7 +3051,8 @@ class FilesScreen {
 
   #updatePath() {
     const path = this.root.querySelector('[data-files-path]');
-    if (path) path.textContent = this.stack.length
+    if (!path) return;
+    path.textContent = this.stack.length
       ? this.stack.map((part) => part.name).join('  /  ')
       : 'Sin carpeta seleccionada';
   }
@@ -2756,12 +3064,60 @@ class FilesScreen {
     }
   }
 
+  async #onChange(e) {
+    const input = e.target;
+    if (!input.matches('[data-files-input], [data-files-folder-input]')) return;
+    const files = Array.from(input.files || []);
+    input.value = '';
+    if (!files.length) return;
+    if (!this.stack.length) await this.openInternal();
+    const current = this.stack.at(-1);
+    if (!current) return;
+    try {
+      const count = await uploadFiles(current, files);
+      this.selectedPath = null;
+      await this.#readCurrent();
+      toast(`${count} archivo${count === 1 ? '' : 's'} agregado${count === 1 ? '' : 's'}.`);
+    } catch (err) {
+      toast(`No se pudieron subir todos los archivos: ${err?.message || 'error'}`, 5000);
+      await this.#readCurrent();
+    }
+  }
+
   async #onClick(e) {
     const action = e.target.closest('[data-act]');
-    if (!action) return;
+    if (!action || action.getAttribute('aria-disabled') === 'true') return;
+    if (action.dataset.act.startsWith('target-')) {
+      await this.#targetAction(action.dataset.act, Number(action.dataset.index));
+      return;
+    }
     switch (action.dataset.act) {
       case 'files-pick':
         await this.chooseFolder();
+        break;
+      case 'files-internal':
+        await this.openInternal();
+        break;
+      case 'files-upload':
+        this.root.querySelector('[data-files-input]')?.click();
+        break;
+      case 'files-upload-folder':
+        this.root.querySelector('[data-files-folder-input]')?.click();
+        break;
+      case 'files-new-folder':
+        this.#newFolder();
+        break;
+      case 'files-rename':
+        this.#renameSelected();
+        break;
+      case 'files-copy':
+        this.#openTargetPicker('copy');
+        break;
+      case 'files-move':
+        this.#openTargetPicker('move');
+        break;
+      case 'files-delete':
+        this.#confirmDelete();
         break;
       case 'files-up':
         await this.goUp();
@@ -2774,6 +3130,9 @@ class FilesScreen {
         break;
       case 'file-open':
         await this.#openEntry(Number(action.dataset.index));
+        break;
+      case 'file-select':
+        this.#selectEntry(Number(action.dataset.index));
         break;
       case 'file-add-movie':
         await this.#addMovie(Number(action.dataset.index));
@@ -2792,11 +3151,209 @@ class FilesScreen {
     if (!this.focus.focusByFid(fid)) this.focus.focusFirst('[data-zone="main"]');
   }
 
+  #selectEntry(index) {
+    const entry = this.entries[index];
+    if (!entry) return;
+    this.selectedPath = this.selectedPath === entry.path ? null : entry.path;
+    this.#renderEntries();
+    this.#updateToolbar();
+    this.#updateSelectionLabel();
+    this.focus.focusByFid(`files:select:${index}`);
+  }
+
+  #newFolder() {
+    if (!this.stack.length || this.dialog.isOpen) return;
+    const parent = this.stack.at(-1);
+    this.dialog.open({
+      title: 'Crear carpeta',
+      hint: 'Escribe un nombre para la nueva carpeta.',
+      fields: [{ key: 'name', label: 'Nombre de la carpeta', placeholder: 'Nueva carpeta' }],
+      submitLabel: 'Crear',
+      onSubmit: async ({ name }) => {
+        try {
+          const folder = await createFolder(parent, name);
+          await this.#readCurrent();
+          this.dialog.returnFid = null;
+          this.focus.focusByFid(`files:item:${this.entries.findIndex((entry) => entry.path === folder.path)}`);
+          toast(`Carpeta creada: ${folder.name}`);
+          return null;
+        } catch (err) {
+          return err?.message || 'No se pudo crear la carpeta.';
+        }
+      },
+    });
+  }
+
+  #renameSelected() {
+    const entry = this.#selectedEntry();
+    if (!entry || this.dialog.isOpen) return;
+    const parent = this.stack.at(-1);
+    this.dialog.open({
+      title: 'Renombrar elemento',
+      hint: `Nuevo nombre para "${entry.name}".`,
+      fields: [{ key: 'name', label: 'Nuevo nombre', value: entry.name }],
+      submitLabel: 'Renombrar',
+      onSubmit: async ({ name }) => {
+        try {
+          await renameEntry(entry, parent, name);
+          this.selectedPath = null;
+          await this.#readCurrent();
+          toast(`Elemento renombrado: ${name}`);
+          return null;
+        } catch (err) {
+          return err?.message || 'No se pudo renombrar el elemento.';
+        }
+      },
+    });
+  }
+
+  #confirmDelete() {
+    const entry = this.#selectedEntry();
+    if (!entry || this.dialog.isOpen) return;
+    const parent = this.stack.at(-1);
+    this.dialog.open({
+      title: 'Confirmar eliminación',
+      hint: `¿Seguro que deseas eliminar "${entry.name}"?${entry.kind === 'directory' ? ' También se eliminará todo su contenido.' : ''} Esta acción no se puede deshacer.`,
+      fields: [],
+      submitLabel: 'Eliminar',
+      onSubmit: async () => {
+        try {
+          await deleteEntry(parent, entry);
+          this.selectedPath = null;
+          await this.#readCurrent();
+          toast(`Eliminado: ${entry.name}`);
+          return null;
+        } catch (err) {
+          return err?.message || 'No se pudo eliminar el elemento.';
+        }
+      },
+    });
+  }
+
+  #openTargetPicker(mode) {
+    const entry = this.#selectedEntry();
+    if (!entry || this.targetOpen || this.dialog.isOpen || !this.rootDirectory) return;
+    this.targetMode = mode;
+    this.targetStack = [this.rootDirectory];
+    this.targetPicker = document.createElement('div');
+    this.targetPicker.className = 'files-target-picker';
+    this.targetPicker.hidden = false;
+    this.root.appendChild(this.targetPicker);
+    this.targetOpen = true;
+    this.#renderTargetPicker();
+    this.focus.clear();
+    this.focus.pushScope(this.targetPicker);
+    this.focus.focusFirst('[data-focusable]');
+  }
+
+  async #renderTargetPicker() {
+    if (!this.targetPicker) return;
+    const current = this.targetStack.at(-1);
+    let folders = [];
+    try {
+      folders = (await listEntries(current)).filter((entry) => entry.kind === 'directory');
+      folders.sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
+    } catch (err) {
+      toast(`No se pudo leer el destino: ${err?.message || 'error'}`);
+    }
+    const operation = this.targetMode === 'copy' ? 'Copiar' : 'Mover';
+    this.targetPicker.innerHTML = `
+      <div class="files-target-card">
+        <div class="files-target-heading">
+          <div><h2>${operation} elemento</h2><p>Elige la carpeta de destino.</p></div>
+          <span>${icon('folder')}</span>
+        </div>
+        <div class="files-target-path">${esc(this.targetStack.map((part) => part.name).join(' / '))}</div>
+        <div class="files-target-actions">
+          <div class="btn" role="button" tabindex="-1" data-focusable data-zone="target" data-fid="target:up" data-act="target-up" aria-disabled="${this.targetStack.length <= 1}">${icon('back')}Atrás</div>
+          <div class="btn" role="button" tabindex="-1" data-focusable data-zone="target" data-fid="target:use" data-act="target-use">${icon('check')}Usar esta carpeta</div>
+          <div class="btn" role="button" tabindex="-1" data-focusable data-zone="target" data-fid="target:cancel" data-act="target-cancel">Cancelar</div>
+        </div>
+        <div class="files-target-folders">
+          ${folders.length ? folders.map((folder, index) => `
+            <div class="files-target-folder" role="button" tabindex="-1" data-focusable data-zone="target"
+                 data-fid="target:folder:${index}" data-act="target-enter" data-index="${index}">
+              ${icon('folder')}<span>${esc(folder.name)}</span>${icon('back', 'files-target-arrow')}
+            </div>`).join('') : '<p class="files-target-empty">No hay subcarpetas en esta ubicación.</p>'}
+        </div>
+      </div>`;
+    this.targetFolders = folders;
+    this.focus.focusFirst('[data-focusable]');
+  }
+
+  async #targetAction(action, index) {
+    if (action === 'target-cancel') {
+      this.#closeTargetPicker();
+      return;
+    }
+    if (action === 'target-up') {
+      if (this.targetStack.length > 1) this.targetStack.pop();
+      await this.#renderTargetPicker();
+      return;
+    }
+    if (action === 'target-enter') {
+      const folder = this.targetFolders?.[index];
+      if (folder) this.targetStack.push({
+        backend: folder.backend, handle: folder.handle, path: folder.path,
+        name: folder.name, kind: 'directory',
+      });
+      await this.#renderTargetPicker();
+      return;
+    }
+    if (action === 'target-use') await this.#applyTargetOperation();
+  }
+
+  async #applyTargetOperation() {
+    const entry = this.#selectedEntry();
+    const target = this.targetStack.at(-1);
+    if (!entry || !target) return;
+    const mode = this.targetMode;
+    if (mode === 'move' && entry.parent?.path === target.path && entry.parent?.backend === target.backend) {
+      toast('El elemento ya está en esa carpeta.');
+      return;
+    }
+    try {
+      if (mode === 'copy') {
+        await copyEntry(entry, target, entry.name, true);
+        toast(`Copiado: ${entry.name}`);
+      } else {
+        const accepted = window.confirm(`¿Mover "${entry.name}" a "${target.name}"?`);
+        if (!accepted) return;
+        await moveEntry(entry, this.stack.at(-1), target);
+        this.selectedPath = null;
+        toast(`Movido: ${entry.name}`);
+      }
+      this.#closeTargetPicker();
+      await this.#readCurrent();
+    } catch (err) {
+      toast(`No se pudo ${mode === 'copy' ? 'copiar' : 'mover'}: ${err?.message || 'error'}`, 5000);
+    }
+  }
+
+  #closeTargetPicker() {
+    if (!this.targetOpen) return;
+    this.targetOpen = false;
+    this.targetPicker?.remove();
+    this.targetPicker = null;
+    this.targetStack = [];
+    this.targetFolders = [];
+    this.targetMode = null;
+    this.focus.popScope();
+    const index = this.entries.findIndex((entry) => entry.path === this.selectedPath);
+    if (!this.focus.focusByFid(index >= 0 ? `files:select:${index}` : 'files:rename')) {
+      this.focus.focusFirst('[data-zone="main"]');
+    }
+  }
+
   async #openEntry(index) {
     const entry = this.entries[index];
     if (!entry || this.loading) return;
     if (entry.kind === 'directory') {
-      this.stack.push({ handle: entry.handle, name: entry.name });
+      this.stack.push({
+        backend: entry.backend, handle: entry.handle, path: entry.path,
+        name: entry.name, kind: 'directory',
+      });
+      this.selectedPath = null;
       await this.#readCurrent();
       this.focus.focusFirst('[data-zone="main"]');
       return;
@@ -2809,7 +3366,7 @@ class FilesScreen {
     }
 
     try {
-      const file = await entry.handle.getFile();
+      const file = await getEntryFile(entry);
       if (kind === 'image') this.openImage(file, entry.name);
       else this.onOpenMedia?.(file, entry.name);
     } catch (err) {
@@ -2821,7 +3378,7 @@ class FilesScreen {
     const entry = this.entries[index];
     if (!entry || entry.kind !== 'file' || fileType(entry.name) !== 'video') return;
     try {
-      await this.onAddMovie?.(entry.handle, entry.name);
+      await this.onAddMovie?.(entry, entry.name);
     } catch (err) {
       toast(`No se pudo agregar a Películas: ${err?.message || 'error desconocido'}`, 4000);
     }
@@ -2900,7 +3457,7 @@ const { LibraryScreen } = __require("js/library.js");
 const { Player } = __require("js/player.js");
 const { Dialog } = __require("js/dialog.js");
 const { FilesScreen } = __require("js/files.js");
-const { getHandle, saveHandle, removeHandle } = __require("js/fileSystem.js");
+const { getHandle, saveHandle, removeHandle, getStoredFile } = __require("js/fileSystem.js");
 const { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS } = __require("js/data/library.js");
 const { parseMediaUrl } = __require("js/core/media.js");
 const { BACKGROUNDS } = __require("js/data/apps.js");
@@ -2922,6 +3479,7 @@ class WebBoxOS {
       youtube: $('#screen-youtube'),
       movies: $('#screen-movies'),
       files: $('#screen-files'),
+      emulators: $('#screen-emulators'),
       settings: $('#screen-settings'),
     };
     this.current = 'home';
@@ -2984,8 +3542,9 @@ class WebBoxOS {
     this.files = new FilesScreen({
       root: this.screens.files,
       focus: this.focus,
+      dialog: this.dialog,
       onOpenMedia: (file) => this.player.openFile(file),
-      onAddMovie: (handle, name) => this.#addMovieFromFiles(handle, name),
+      onAddMovie: (entry, name) => this.#addMovieFromFiles(entry, name),
     });
     this.settings = new SettingsScreen({
       root: this.screens.settings,
@@ -2999,6 +3558,7 @@ class WebBoxOS {
     this.launcher.render();
     for (const lib of Object.values(this.libraries)) lib.render();
     this.files.render();
+    this.#renderEmulators();
     this.settings.render();
     this.#applyDisplay();
     this.#bindEvents();
@@ -3039,6 +3599,9 @@ class WebBoxOS {
     this.sidebar.addEventListener('click', (e) => {
       const item = e.target.closest('[data-screen]');
       if (item) this.navigate(item.dataset.screen, { enter: true });
+    });
+    this.screens.emulators.addEventListener('click', (e) => {
+      if (e.target.closest('[data-act="emulators-home"]')) this.navigate('home', { enter: true });
     });
     bus.on('focus:change', () => this.#syncSidebar());
 
@@ -3133,6 +3696,8 @@ class WebBoxOS {
       this.settings.focusEntry();
     } else if (name === 'files') {
       this.files.focusEntry();
+    } else if (name === 'emulators') {
+      this.focus.focusFirst('#screen-emulators [data-zone="main"]');
     } else {
       this.focus.focusFirst('[data-zone="main"]');
     }
@@ -3169,11 +3734,25 @@ class WebBoxOS {
     if (this.dialog.isOpen) this.dialog.close({ restore: false });
     if (this.player.isOpen) this.player.close({ restore: false });
     if (this.files?.viewerOpen) this.files.closeViewer({ restore: false });
+    if (this.files?.targetOpen) this.files.closeTargetPicker();
     if (this.overlayOpen) this.closeOverlay({ restore: false });
     if (this.settings.capturing) this.settings.cancelCapture();
     this.navigate('home');
     this.screens.home.scrollTo({ top: 0 });
     this.#enterScreen('home');
+  }
+
+  #renderEmulators() {
+    this.screens.emulators.innerHTML = `
+      <h1 class="screen-title">Emuladores</h1>
+      <p class="files-sub">Tu espacio para organizar y ejecutar emuladores desde WebBox OS.</p>
+      <div class="emulators-empty">
+        <div class="emulators-empty-icon">${icon('gamepad')}</div>
+        <h2>Emuladores</h2>
+        <p>Esta sección ya está disponible en el menú lateral. La integración de núcleos y consolas se añadirá en una siguiente fase.</p>
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="emulators:home" data-act="emulators-home">${icon('home')}Volver al inicio</div>
+      </div>`;
   }
 
   // -------------------------------------------------------------- overlay
@@ -3270,24 +3849,34 @@ class WebBoxOS {
     try {
       const handle = await getHandle(item.fileHandleKey);
       if (!handle) throw new Error('No se encontró el archivo guardado. Vuelve a agregarlo desde Archivos.');
-      let permission = await handle.queryPermission?.({ mode: 'read' });
-      if (permission !== 'granted' && handle.requestPermission) {
-        permission = await handle.requestPermission({ mode: 'read' });
+      let file;
+      if (handle?.getFile) {
+        let permission = await handle.queryPermission?.({ mode: 'read' });
+        if (permission !== 'granted' && handle.requestPermission) {
+          permission = await handle.requestPermission({ mode: 'read' });
+        }
+        if (permission && permission !== 'granted') {
+          throw new Error('El navegador no concedió permiso de lectura. Vuelve a elegir la carpeta en Archivos.');
+        }
+        file = await handle.getFile();
+      } else {
+        file = await getStoredFile(handle);
       }
-      if (permission && permission !== 'granted') {
-        throw new Error('El navegador no concedió permiso de lectura. Vuelve a elegir la carpeta en Archivos.');
-      }
-      const file = await handle.getFile();
       this.player.openFile(file, { onDelete, title: item.title });
     } catch (err) {
       toast(err?.message || 'No se pudo abrir el archivo local.', 4500);
     }
   }
 
-  async #addMovieFromFiles(handle, name) {
+  async #addMovieFromFiles(entry, name) {
     const token = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     const key = `movie:${token}`;
-    await saveHandle(key, handle);
+    // En IndexedDB guardamos una referencia simple; OPFS y carpetas del equipo
+    // conservan su manejador nativo para poder abrir el archivo más adelante.
+    const reference = entry.backend === 'idb'
+      ? { backend: 'idb', path: entry.path, name: entry.name }
+      : entry.handle;
+    await saveHandle(key, reference);
     const result = this.libraries.movies.addFileHandle({ title: name, fileHandleKey: key });
     if (typeof result === 'string') throw new Error(result);
     toast(`Agregado a Películas: ${result.title}`);
