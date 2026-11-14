@@ -1,23 +1,29 @@
 /**
- * Almacén SQLite (archivo database/webbox.sqlite). No necesita instalar nada:
- * usa el módulo integrado "node:sqlite" (Node.js 22.5 o superior).
- * El archivo se puede abrir con "DB Browser for SQLite".
+ * Almacén SQLite (archivo database/webbox.sqlite, o la ruta de SQLITE_FILE).
+ * Usa el módulo integrado "node:sqlite" (Node.js 22.5 o superior): no instala nada.
+ * Tablas en español: videos_youtube, musica, peliculas.
+ *
+ * La API identifica cada elemento con un solo número: id_publico = id_fila * 10 + código
+ * del tipo (1 youtube, 2 music, 3 movies). Así /api/items/:id sigue funcionando igual.
  */
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DuplicateError } from './errors.js';
 
-const COLUMNS = 'id, kind, title, url, category, image, artist';
 const SCHEMA = new URL('../../database/schema_sqlite.sql', import.meta.url);
+const TABLES = { youtube: 'videos_youtube', music: 'musica', movies: 'peliculas' };
+const CODES = { youtube: 1, music: 2, movies: 3 };
+const KIND_BY_CODE = { 1: 'youtube', 2: 'music', 3: 'movies' };
+const COLS = 'id, titulo, enlace, categoria, imagen, artista';
 
-const toItem = (r) => ({
-  id: Number(r.id),
-  kind: r.kind,
-  title: r.title,
-  url: r.url,
-  category: r.category,
-  image: r.image,
-  artist: r.artist,
+const toItem = (kind, r) => ({
+  id: Number(r.id) * 10 + CODES[kind],
+  kind,
+  title: r.titulo,
+  url: r.enlace,
+  category: r.categoria,
+  image: r.imagen,
+  artist: r.artista,
 });
 
 export async function createSqliteStore(file) {
@@ -25,37 +31,71 @@ export async function createSqliteStore(file) {
   try {
     ({ DatabaseSync } = await import('node:sqlite'));
   } catch {
-    throw new Error(`Tu Node.js (${process.version}) es muy antiguo para SQLite. Instala Node.js 22.5 o superior desde nodejs.org.`);
+    throw new Error(`Tu Node.js (${process.version}) es muy antiguo para SQLite. Necesitas Node.js 22.5 o superior (en Render: variable NODE_VERSION=22).`);
   }
   mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000;');
   db.exec(readFileSync(SCHEMA, 'utf8'));
 
-  const listAll = db.prepare(`SELECT ${COLUMNS} FROM items ORDER BY kind, sort_order, id`);
-  const listKind = db.prepare(`SELECT ${COLUMNS} FROM items WHERE kind = ? ORDER BY sort_order, id`);
-  const insert = db.prepare('INSERT INTO items (kind, title, url, category, image, artist) VALUES (?, ?, ?, ?, ?, ?)');
-  const del = db.prepare('DELETE FROM items WHERE id = ?');
+  // Migración de la versión anterior (tabla única "items" en inglés), si existe.
+  const old = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'items'").get();
+  if (old) {
+    db.exec('BEGIN');
+    try {
+      for (const [kind, table] of Object.entries(TABLES)) {
+        db.prepare(
+          `INSERT OR IGNORE INTO ${table} (titulo, enlace, categoria, imagen, artista)
+           SELECT title, url, category, image, artist FROM items WHERE kind = ? ORDER BY sort_order, id`,
+        ).run(kind);
+      }
+      db.exec('DROP TABLE items');
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  const select = {};
+  const insert = {};
+  const del = {};
+  for (const [kind, table] of Object.entries(TABLES)) {
+    select[kind] = db.prepare(`SELECT ${COLS} FROM ${table} ORDER BY id`);
+    insert[kind] = db.prepare(`INSERT INTO ${table} (titulo, enlace, categoria, imagen, artista) VALUES (?, ?, ?, ?, ?)`);
+    del[kind] = db.prepare(`DELETE FROM ${table} WHERE id = ?`);
+  }
 
   return {
     name: 'sqlite',
 
     async list(kind = null) {
-      return (kind ? listKind.all(kind) : listAll.all()).map(toItem);
+      const kinds = kind ? [kind] : Object.keys(TABLES);
+      return kinds.flatMap((k) => select[k].all().map((r) => toItem(k, r)));
     },
 
     async create(item) {
       try {
-        const r = insert.run(item.kind, item.title, item.url, item.category, item.image, item.artist);
-        return toItem({ id: r.lastInsertRowid, ...item });
+        const r = insert[item.kind].run(item.title, item.url, item.category, item.image, item.artist);
+        return toItem(item.kind, {
+          id: r.lastInsertRowid,
+          titulo: item.title,
+          enlace: item.url,
+          categoria: item.category,
+          imagen: item.image,
+          artista: item.artist,
+        });
       } catch (err) {
         if (/UNIQUE/i.test(String(err && err.message))) throw new DuplicateError();
         throw err;
       }
     },
 
-    async remove(id) {
-      return del.run(id).changes > 0;
+    async remove(publicId) {
+      const kind = KIND_BY_CODE[publicId % 10];
+      const rowId = Math.floor(publicId / 10);
+      if (!kind || rowId < 1) return false;
+      return del[kind].run(rowId).changes > 0;
     },
 
     async ping() {

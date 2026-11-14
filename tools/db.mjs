@@ -6,59 +6,27 @@
  *   node tools/db.mjs sincronizar   importar + exportar (úsalo después de "git pull")
  * Nunca borra nada: sincronizar solo suma elementos nuevos.
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv } from '../server/env.js';
 import { createSqliteStore } from '../server/store/sqlite.js';
-import { validateItem } from '../server/validate.js';
-import { DuplicateError } from '../server/store/errors.js';
+import { exportarCatalogo, importarCatalogo } from '../server/catalogo.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const env = loadEnv(ROOT);
 const DB_FILE = resolve(ROOT, env.SQLITE_FILE || 'database/webbox.sqlite');
 const JSON_FILE = resolve(ROOT, 'database/catalogo.json');
-const order = { youtube: 0, music: 1, movies: 2 };
-
 const store = await createSqliteStore(DB_FILE);
 
 async function exportar() {
-  const items = (await store.list())
-    .map(({ id, ...rest }) => rest)
-    .sort((a, b) => order[a.kind] - order[b.kind] || a.title.localeCompare(b.title, 'es') || a.url.localeCompare(b.url));
-  writeFileSync(JSON_FILE, `${JSON.stringify({ items }, null, 2)}\n`, 'utf8');
-  console.log(`✔ Exportados ${items.length} elementos a database/catalogo.json`);
+  const n = await exportarCatalogo(store, JSON_FILE);
+  console.log(`✔ Exportados ${n} elementos a database/catalogo.json`);
 }
 
 async function importar() {
-  if (!existsSync(JSON_FILE)) {
-    console.log('· No hay database/catalogo.json todavía; nada que importar.');
-    return;
-  }
-  let data;
-  try {
-    data = JSON.parse(readFileSync(JSON_FILE, 'utf8'));
-  } catch {
-    throw new Error('database/catalogo.json no es un JSON válido (¿quedó un conflicto de git sin resolver?).');
-  }
-  let added = 0;
-  let existing = 0;
-  let invalid = 0;
-  for (const raw of Array.isArray(data.items) ? data.items : []) {
-    const checked = validateItem(raw);
-    if (!checked.ok) {
-      invalid += 1;
-      continue;
-    }
-    try {
-      await store.create(checked.value);
-      added += 1;
-    } catch (err) {
-      if (err instanceof DuplicateError) existing += 1;
-      else throw err;
-    }
-  }
-  console.log(`✔ Importados: ${added} nuevos, ${existing} ya existían${invalid ? `, ${invalid} inválidos omitidos` : ''}.`);
+  const r = await importarCatalogo(store, JSON_FILE);
+  if (!r) return console.log('· No hay database/catalogo.json todavía; nada que importar.');
+  return console.log(`✔ Importados: ${r.added} nuevos, ${r.existing} ya existían${r.invalid ? `, ${r.invalid} inválidos omitidos` : ''}.`);
 }
 
 const command = process.argv[2];

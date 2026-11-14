@@ -1,15 +1,33 @@
--- WebBox OS: esquema SQLite (se abre con "DB Browser for SQLite").
+-- WebBox OS: esquema SQLite con tablas en español (se abre con "DB Browser for SQLite").
 -- El servidor lo aplica solo al arrancar; este archivo es para consulta.
-CREATE TABLE IF NOT EXISTS items (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind       TEXT NOT NULL CHECK (kind IN ('youtube','music','movies')),
-  title      TEXT NOT NULL,
-  url        TEXT NOT NULL,
-  category   TEXT NOT NULL DEFAULT '',
-  image      TEXT NOT NULL DEFAULT '',
-  artist     TEXT NOT NULL DEFAULT '',
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE (kind, url)
+-- Un mismo enlace no puede repetirse dentro de la misma tabla.
+
+CREATE TABLE IF NOT EXISTS videos_youtube (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  titulo    TEXT NOT NULL,
+  enlace    TEXT NOT NULL UNIQUE,
+  categoria TEXT NOT NULL DEFAULT '',
+  imagen    TEXT NOT NULL DEFAULT '',
+  artista   TEXT NOT NULL DEFAULT '',
+  creado_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_items_kind_order ON items (kind, sort_order, id);
+
+CREATE TABLE IF NOT EXISTS musica (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  titulo    TEXT NOT NULL,
+  enlace    TEXT NOT NULL UNIQUE,
+  categoria TEXT NOT NULL DEFAULT '',
+  imagen    TEXT NOT NULL DEFAULT '',
+  artista   TEXT NOT NULL DEFAULT '',
+  creado_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS peliculas (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  titulo    TEXT NOT NULL,
+  enlace    TEXT NOT NULL UNIQUE,
+  categoria TEXT NOT NULL DEFAULT '',
+  imagen    TEXT NOT NULL DEFAULT '',
+  artista   TEXT NOT NULL DEFAULT '',
+  creado_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

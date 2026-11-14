@@ -185,7 +185,7 @@ campo abre el teclado del sistema).
 
 ## Base de datos SQLite (la más fácil, sin instalar nada)
 
-Por defecto el servidor usa el archivo `database/webbox.sqlite`, que se abre con **DB Browser for SQLite** (Archivo > Abrir base de datos). Requiere **Node.js 22.5 o superior**; no hace falta `npm install`. Si prefieres MySQL, pon `STORE=mysql` en `.env` y sigue la sección de abajo.
+Por defecto el servidor usa el archivo `database/webbox.sqlite`, que se abre con **DB Browser for SQLite** (Archivo > Abrir base de datos). Sus tablas están en español: `videos_youtube`, `musica` y `peliculas` (columnas `titulo`, `enlace`, `categoria`, `imagen`, `artista`). Requiere **Node.js 22.5 o superior**; no hace falta `npm install`. Si prefieres MySQL, pon `STORE=mysql` en `.env` y sigue la sección de abajo.
 
 ```
 npm start            # crea la base sola la primera vez y levanta la web en :8080
@@ -198,6 +198,12 @@ El archivo `.sqlite` es binario y **no se sube a git** (da conflictos). Lo que s
 2. En otro equipo (o tras `git pull`): `npm run sincronizar`. Solo **agrega** lo que falte, nunca borra.
 3. Si borras algo a propósito, bórralo también en `catalogo.json` o volverá a aparecer al sincronizar.
 4. Tras un `git pull`, reinicia `npm start` si estaba abierto.
+
+### En Render (SQLite)
+- Variables: `NODE_VERSION=22` y `ADMIN_KEY=<tu clave larga>`. Build: `npm install`. Start: `npm start`.
+- Al arrancar, el servidor carga `database/catalogo.json` en la base (solo agrega). Así, aunque el plan gratis borre el disco al reiniciar, tu catálogo vuelve. Lo que agregues desde la web en Render se pierde al reiniciar si no lo pasas a `catalogo.json` y lo subes a GitHub.
+- Con un Disk de pago montado en `/var/data`, agrega `SQLITE_FILE=/var/data/webbox.sqlite` y los datos persisten.
+- `SEMBRAR=0` desactiva la carga automática.
 
 ## Base de datos MySQL y servidor
 
