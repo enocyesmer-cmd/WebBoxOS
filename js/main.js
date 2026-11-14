@@ -15,10 +15,12 @@ import { LibraryScreen } from './library.js';
 import { Player } from './player.js';
 import { Dialog } from './dialog.js';
 import { FilesScreen } from './files.js';
+import { GamesScreen } from './games.js';
 import { getHandle, saveHandle, removeHandle, getStoredFile } from './fileSystem.js';
 import { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS } from './data/library.js';
 import { parseMediaUrl } from './core/media.js';
 import { BACKGROUNDS } from './data/apps.js';
+import { getCustomBackground } from './backgroundStore.js';
 import { hydrateIcons, icon } from './icons.js';
 import { esc, toast } from './ui.js';
 
@@ -37,6 +39,7 @@ class WebBoxOS {
       youtube: $('#screen-youtube'),
       movies: $('#screen-movies'),
       files: $('#screen-files'),
+      games: $('#screen-games'),
       emulators: $('#screen-emulators'),
       settings: $('#screen-settings'),
     };
@@ -45,6 +48,8 @@ class WebBoxOS {
     this.overlayReturnFid = null;
     this.lastPointerMove = 0;
     this.cursorTimer = 0;
+    this.backgroundRequest = 0;
+    this.backgroundObjectUrl = null;
 
     this.focus = new FocusManager(this.shell);
     this.gamepad = new GamepadManager();
@@ -104,6 +109,12 @@ class WebBoxOS {
       onOpenMedia: (file) => this.player.openFile(file),
       onAddMovie: (entry, name) => this.#addMovieFromFiles(entry, name),
     });
+    this.games = new GamesScreen({
+      root: this.screens.games,
+      focus: this.focus,
+      files: this.files,
+      onOpenFiles: () => this.navigate('files', { enter: true }),
+    });
     this.settings = new SettingsScreen({
       root: this.screens.settings,
       focus: this.focus,
@@ -116,6 +127,7 @@ class WebBoxOS {
     this.launcher.render();
     for (const lib of Object.values(this.libraries)) lib.render();
     this.files.render();
+    this.games.render();
     this.#renderEmulators();
     this.settings.render();
     this.#applyDisplay();
@@ -159,7 +171,7 @@ class WebBoxOS {
       if (item) this.navigate(item.dataset.screen, { enter: true });
     });
     this.screens.emulators.addEventListener('click', (e) => {
-      if (e.target.closest('[data-act="emulators-home"]')) this.navigate('home', { enter: true });
+      if (e.target.closest('[data-act="emulators-snes"]')) this.navigate('games', { enter: true });
     });
     bus.on('focus:change', () => this.#syncSidebar());
 
@@ -204,6 +216,8 @@ class WebBoxOS {
 
     // Con el reproductor abierto, la primera pulsación solo muestra los controles ocultos.
     if (this.player.handleAction(action)) return;
+    // Mientras se juega, el propio emulador recibe las entradas del mando.
+    if (this.games?.isPlaying) return;
 
     switch (action) {
       case 'up':
@@ -233,6 +247,7 @@ class WebBoxOS {
    */
   navigate(name, { enter = false } = {}) {
     if (!this.screens[name]) return;
+    if (this.current === 'games' && name !== 'games') this.games?.stop({ restore: false });
 
     if (name !== this.current) {
       for (const [key, el] of Object.entries(this.screens)) el.hidden = key !== name;
@@ -254,6 +269,8 @@ class WebBoxOS {
       this.settings.focusEntry();
     } else if (name === 'files') {
       this.files.focusEntry();
+    } else if (name === 'games') {
+      this.games.focusEntry();
     } else if (name === 'emulators') {
       this.focus.focusFirst('#screen-emulators [data-zone="main"]');
     } else {
@@ -275,6 +292,7 @@ class WebBoxOS {
       return;
     }
     if (this.current === 'files' && await this.files.handleBack()) return;
+    if (this.current === 'games' && await this.games.handleBack()) return;
     if (this.settings.handleBack()) return;
     if (this.current !== 'home') {
       this.navigate('home', { enter: true });
@@ -292,6 +310,7 @@ class WebBoxOS {
     if (this.dialog.isOpen) this.dialog.close({ restore: false });
     if (this.player.isOpen) this.player.close({ restore: false });
     if (this.files?.viewerOpen) this.files.closeViewer({ restore: false });
+    this.games?.stop({ restore: false });
     if (this.files?.targetOpen) this.files.closeTargetPicker();
     if (this.overlayOpen) this.closeOverlay({ restore: false });
     if (this.settings.capturing) this.settings.cancelCapture();
@@ -303,14 +322,26 @@ class WebBoxOS {
   #renderEmulators() {
     this.screens.emulators.innerHTML = `
       <h1 class="screen-title">Emuladores</h1>
-      <p class="files-sub">Tu espacio para organizar y ejecutar emuladores desde WebBox OS.</p>
-      <div class="emulators-empty">
-        <div class="emulators-empty-icon">${icon('gamepad')}</div>
-        <h2>Emuladores</h2>
-        <p>Esta sección ya está disponible en el menú lateral. La integración de núcleos y consolas se añadirá en una siguiente fase.</p>
-        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
-             data-fid="emulators:home" data-act="emulators-home">${icon('home')}Volver al inicio</div>
-      </div>`;
+      <p class="files-sub">Consolas retro listas para ejecutar tus juegos desde WebBox OS.</p>
+      <section class="emulators-catalog">
+        <article class="emulators-console-card">
+          <div class="emulators-console-art">${icon('gamepad')}</div>
+          <div class="emulators-console-info">
+            <div class="emulators-card-topline">
+              <span class="emulators-kicker">CONSOLA DISPONIBLE</span>
+              <span class="emulators-status"><i></i> Lista para jugar</span>
+            </div>
+            <h2>Super Nintendo (SNES)</h2>
+            <p>EmulatorJS · Snes9x · ROMs desde el Gestor de archivos · Mando y teclado.</p>
+            <div class="emulators-card-actions">
+              <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+                   data-fid="emulators:snes" data-act="emulators-snes">${icon('play')}Abrir SNES</div>
+              <span class="emulators-card-note">Formatos: SFC · SMC · FIG · SWC</span>
+            </div>
+          </div>
+        </article>
+        <p class="emulators-help">Tus ROMs no se incluyen en WebBox OS. Guarda tus archivos en el Gestor de archivos y abre SNES para buscarlos y ejecutarlos.</p>
+      </section>`;
   }
 
   // -------------------------------------------------------------- overlay
@@ -489,10 +520,44 @@ class WebBoxOS {
 
     $('#hints').hidden = !config.get('showHints');
 
-    const bg = BACKGROUNDS.find((b) => b.id === config.get('background')) ?? BACKGROUNDS[0];
-    $('#bg').style.backgroundImage = `url("${bg.file}")`;
-
+    this.#applyBackground();
     this.#tickClock();
+  }
+
+  async #applyBackground() {
+    const request = ++this.backgroundRequest;
+    const selected = config.get('background');
+    let imageUrl = '';
+    let isTemporaryUrl = false;
+
+    if (selected === 'custom') {
+      try {
+        const blob = await getCustomBackground();
+        if (request !== this.backgroundRequest) return;
+        if (blob) {
+          imageUrl = URL.createObjectURL(blob);
+          isTemporaryUrl = true;
+        }
+      } catch (error) {
+        console.warn('[WebBox OS] No se pudo recuperar el fondo personalizado.', error);
+      }
+      if (!imageUrl) {
+        if (request !== this.backgroundRequest) return;
+        config.set('background', 'aurora');
+        return;
+      }
+    } else {
+      const bg = BACKGROUNDS.find((b) => b.id === selected) ?? BACKGROUNDS[0];
+      imageUrl = bg.file;
+    }
+
+    if (request !== this.backgroundRequest) {
+      if (isTemporaryUrl) URL.revokeObjectURL(imageUrl);
+      return;
+    }
+    if (this.backgroundObjectUrl) URL.revokeObjectURL(this.backgroundObjectUrl);
+    this.backgroundObjectUrl = isTemporaryUrl ? imageUrl : null;
+    $('#bg').style.backgroundImage = `url("${imageUrl}")`;
   }
 
   #startClock() {

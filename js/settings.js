@@ -12,6 +12,7 @@ import { storage } from './core/storage.js';
 import { bus } from './core/events.js';
 import { icon } from './icons.js';
 import { BACKGROUNDS } from './data/apps.js';
+import { getCustomBackground, saveCustomBackground } from './backgroundStore.js';
 import { esc, toast } from './ui.js';
 
 const TABS = [
@@ -68,6 +69,9 @@ export class SettingsScreen {
     this.capturing = null; // acción que se está remapeando
     this.confirmReset = false;
     this.live = new Map(); // index -> { cells, bars }
+    this.customBackgroundUrl = null;
+    this.customBackgroundLoading = false;
+    this.customBackgroundVersion = 0;
 
     root.innerHTML = `
       <div class="settings">
@@ -81,6 +85,9 @@ export class SettingsScreen {
     this.panelEl = root.querySelector('.settings-panel');
 
     root.addEventListener('click', (e) => this.#onClick(e));
+    root.addEventListener('change', (e) => {
+      if (e.target.matches?.('[data-bg-upload]')) this.#onBackgroundUpload(e.target);
+    });
     // Las pestañas cambian el panel en cuanto reciben el foco.
     root.addEventListener('tvfocus', (e) => {
       const tab = e.target.closest?.('[data-tab]');
@@ -181,6 +188,7 @@ export class SettingsScreen {
     this.gamepad.setWatching(this.active === 'test');
     if (this.active === 'test') this.#cacheLive();
     this.panelEl.scrollTop = 0;
+    if (this.active === 'background') this.#loadCustomBackgroundPreview();
   }
 
   // ----------------------------------------------------------- bloques UI
@@ -408,7 +416,66 @@ export class SettingsScreen {
         <span class="tick">${icon('check')}</span>
       </div>`,
     ).join('');
-    return `<h2 class="panel-title">Fondo de pantalla</h2><div class="bg-grid">${tiles}</div>`;
+    return `
+      <h2 class="panel-title">Fondo de pantalla</h2>
+      <p class="background-description">Elige uno de los fondos incluidos o agrega una imagen de tu equipo.</p>
+      ${this.#action('bg-add', 'bg:add', 'Agregar fondo', 'Selecciona una imagen JPG, PNG, WEBP, GIF, AVIF o BMP (máximo 20 MB)', 'plus')}
+      <input type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/bmp" data-bg-upload hidden>
+      <div class="bg-grid" data-bg-grid>${tiles}</div>`;
+  }
+
+  async #loadCustomBackgroundPreview() {
+    if (this.customBackgroundUrl || this.customBackgroundLoading) {
+      this.#syncCustomBackgroundTile();
+      return;
+    }
+    this.customBackgroundLoading = true;
+    const version = ++this.customBackgroundVersion;
+    try {
+      const blob = await getCustomBackground();
+      if (version !== this.customBackgroundVersion || this.active !== 'background') return;
+      if (blob) this.customBackgroundUrl = URL.createObjectURL(blob);
+      this.#syncCustomBackgroundTile();
+    } catch (error) {
+      console.warn('[WebBox OS] No se pudo cargar la vista previa del fondo.', error);
+    } finally {
+      if (version === this.customBackgroundVersion) this.customBackgroundLoading = false;
+    }
+  }
+
+  #syncCustomBackgroundTile() {
+    const grid = this.panelEl.querySelector('[data-bg-grid]');
+    if (!grid) return;
+    grid.querySelector('[data-id="custom"]')?.remove();
+    if (!this.customBackgroundUrl) return;
+    const tile = document.createElement('div');
+    tile.className = `bg-tile${config.get('background') === 'custom' ? ' selected' : ''}`;
+    tile.setAttribute('role', 'button');
+    tile.setAttribute('tabindex', '-1');
+    tile.setAttribute('data-focusable', '');
+    tile.dataset.zone = 'settings-panel';
+    tile.dataset.fid = 'bg:custom';
+    tile.dataset.act = 'bg';
+    tile.dataset.id = 'custom';
+    tile.style.backgroundImage = `url("${this.customBackgroundUrl}")`;
+    tile.innerHTML = `<span>Mi fondo</span><span class="tick">${icon('check')}</span>`;
+    grid.append(tile);
+  }
+
+  async #onBackgroundUpload(input) {
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    try {
+      await saveCustomBackground(file);
+      if (this.customBackgroundUrl) URL.revokeObjectURL(this.customBackgroundUrl);
+      this.customBackgroundUrl = URL.createObjectURL(file);
+      config.set('background', 'custom');
+      this.rerender(true);
+      toast(`Fondo agregado: ${file.name}`);
+    } catch (error) {
+      toast(error?.message || 'No se pudo agregar el fondo.', 4200);
+    }
   }
 
   // ---------------------------------------------------------------- Pantalla
@@ -457,8 +524,15 @@ export class SettingsScreen {
         this.rerender(true);
         break;
       case 'bg':
+        if (el.dataset.id === 'custom' && !this.customBackgroundUrl) {
+          toast('Primero agrega una imagen con el botón Agregar fondo.');
+          break;
+        }
         config.set('background', el.dataset.id);
         this.rerender(true);
+        break;
+      case 'bg-add':
+        this.panelEl.querySelector('[data-bg-upload]')?.click();
         break;
       case 'remap':
         this.#startCapture(el.dataset.action);

@@ -1,4 +1,4 @@
-# WebBox OS — Launcher + control remoto + YouTube + Películas + Archivos
+# WebBox OS — Launcher + control remoto + multimedia + Archivos + SNES + fondos personalizados
 
 Launcher estilo Android TV / Google TV que corre en el navegador, sin frameworks ni dependencias.
 Incluye navegación por foco, teclado, mouse y mandos compatibles con la Gamepad API.
@@ -70,24 +70,56 @@ operaciones solo afectan a los datos de WebBox OS. Los archivos importados puede
 espacio del almacenamiento web y están sujetos a la cuota del navegador; para contenido muy
 grande se recomienda utilizar una carpeta del equipo cuando sea compatible.
 
-## Emuladores
+## Juegos · Super Nintendo (SNES)
 
-**Emuladores** aparece debajo de Gestor de archivos en el panel izquierdo. Por ahora es una
-sección de entrada preparada en la navegación; todavía no incorpora núcleos ni emuladores.
+La sección **Juegos** integra EmulatorJS con el núcleo SNES (Snes9x). La interfaz del
+emulador se solicita en español latinoamericano (`es-419`). El reproductor se abre dentro
+de un `iframe` para aislar el motor del resto del launcher.
+
+1. Abre **Gestor de archivos** y selecciona la carpeta del PC donde guardas tus ROMs, o
+   abre el almacenamiento interno y sube tus archivos.
+2. Entra en **Juegos** y pulsa **Buscar ROMs en Archivos**. La búsqueda recorre también
+   subcarpetas de la ubicación abierta.
+3. Selecciona **Jugar** en la ROM deseada. Puedes usar teclado, mando compatible o los
+   controles en pantalla que ofrece EmulatorJS.
+4. Para salir, usa **Salir del juego**, Escape o mantén pulsado GUIDE durante 1,5 segundos.
+
+Se reconocen los formatos `.sfc`, `.smc`, `.fig`, `.gd3`, `.gd7`, `.dx2`, `.bsx` y `.swc`.
+No se incluyen ROMs en el proyecto. El archivo seleccionado se lee desde el Gestor de archivos
+y se entrega al emulador mediante una URL temporal `blob:`; WebBox OS no mueve ni modifica
+la ROM.
+
+**Conexión necesaria:** esta integración descarga `loader.js`, el núcleo WebAssembly y los
+recursos de EmulatorJS desde `https://cdn.emulatorjs.org/stable/data/`. Por eso el juego
+requiere Internet y el núcleo no está incluido dentro del ZIP. La lectura de ROMs sí permanece
+en el almacenamiento local del navegador/equipo. La disponibilidad de ROMs y el uso de copias
+deben respetar los derechos de autor aplicables.
+
+**Emuladores** muestra el catálogo de consolas disponibles. La tarjeta **Super Nintendo (SNES)** y el botón **Abrir SNES** llevan a la biblioteca de **Juegos**, donde se buscan y ejecutan las ROMs del Gestor de archivos.
+
+## Fondos personalizados
+
+En **Configuración > Fondo**, el botón **Agregar fondo** permite seleccionar una imagen propia
+(JPG, PNG, WEBP, GIF, AVIF o BMP, hasta 20 MB). La imagen se guarda como Blob en IndexedDB
+y queda disponible después de cerrar y volver a abrir WebBox OS en el mismo perfil del navegador.
+Selecciona **Mi fondo** para aplicarla; cualquiera de los fondos incluidos permite volver al diseño
+original.
 
 ## Estructura
 
     index.html            estructura y pantallas
-    css/                  main · launcher · navigation · settings · media · files
+    css/                  main · launcher · navigation · settings · media · files · games · emulators
     js/main.js            arranque, router, overlay, reloj e integración de pantallas
     js/files.js           gestor de archivos, operaciones y selectores de destino
+    js/games.js           biblioteca de ROM y emulador SNES (EmulatorJS / Snes9x)
     js/fileSystem.js      adaptadores de File System Access, OPFS e IndexedDB
     js/player.js          reproductor de YouTube, video y audio
     js/core/              events · storage · config · focus · media
     js/input/             keyboard · gamepad
     js/launcher.js        filas y tarjetas
     js/library.js         bibliotecas YouTube / Películas
-    js/settings.js        configuración y prueba de botones
+    js/settings.js        configuración, fondos personalizados y prueba de botones
+    js/backgroundStore.js almacenamiento de imágenes de fondo en IndexedDB
     js/data/              datos de aplicaciones, fondos y bibliotecas
     tools/build.py        empaquetador sin dependencias para `file://`
     js/bundle.js          bundle generado para doble clic
@@ -100,7 +132,11 @@ sección de entrada preparada en la navegación; todavía no incorpora núcleos 
     python3 tools/build.py
 
 Las pruebas de lógica cubren foco espacial, mapeo y repetición de mando, conexión/desconexión,
-teclado y análisis de enlaces multimedia. También se deben comprobar en un navegador local las operaciones de archivo con permisos reales.
+teclado, análisis de enlaces multimedia y detección de extensiones SNES. La navegación entre
+Emuladores y Juegos y la carga de un fondo personalizado se verificaron en Chromium con un
+documento de prueba y almacenamiento IndexedDB simulado. También se deben
+comprobar en un navegador local las operaciones de archivo con permisos reales y la descarga
+del núcleo EmulatorJS desde su CDN.
 El entorno de desarrollo puede bloquear el selector nativo del sistema; en ese caso, usa el
 almacenamiento interno para probar importación y organización de archivos.
 

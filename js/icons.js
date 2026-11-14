@@ -25,6 +25,7 @@ const PATHS = {
   book: '<path d="M5 4.5h11a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/>',
   youtube: '<rect x="3" y="5.5" width="18" height="13" rx="4"/><path d="m10.2 9.2 4.6 2.8-4.6 2.8z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  search: '<circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
   move: '<path d="M5 12h14M13 6l6 6-6 6"/><path d="M5 5v14"/>',
   trash: '<path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l.8 12.5h9.4L17.5 7M10 11v5M14 11v5"/>',

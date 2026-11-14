@@ -826,7 +826,7 @@ const APPS = [
   { id: 'music', name: 'Música', icon: 'music', c1: '#7f5af0', c2: '#2cb1ff' },
   { id: 'photos', name: 'Fotos', icon: 'photo', c1: '#11998e', c2: '#7ee08f' },
   { id: 'browser', name: 'Navegador', icon: 'globe', c1: '#2563eb', c2: '#22d3ee' },
-  { id: 'games', name: 'Juegos', icon: 'gamepad', c1: '#e11d74', c2: '#9333ea' },
+  { id: 'games', name: 'Juegos', icon: 'gamepad', c1: '#e11d74', c2: '#9333ea', screen: 'games' },
   { id: 'tv', name: 'TV en vivo', icon: 'tv', c1: '#f59e0b', c2: '#ef4444' },
   { id: 'files', name: 'Archivos', icon: 'folder', c1: '#475569', c2: '#94a3b8', screen: 'files' },
   { id: 'news', name: 'Noticias', icon: 'book', c1: '#0ea5e9', c2: '#6366f1' },
@@ -885,6 +885,7 @@ const PATHS = {
   book: '<path d="M5 4.5h11a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/>',
   youtube: '<rect x="3" y="5.5" width="18" height="13" rx="4"/><path d="m10.2 9.2 4.6 2.8-4.6 2.8z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  search: '<circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
   move: '<path d="M5 12h14M13 6l6 6-6 6"/><path d="M5 5v14"/>',
   trash: '<path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l.8 12.5h9.4L17.5 7M10 11v5M14 11v5"/>',
@@ -1054,6 +1055,96 @@ class Launcher {
 }
     Object.assign(exports, { Launcher });
   };
+  __modules["js/backgroundStore.js"] = function (module, exports, __require) {
+/**
+ * Almacenamiento persistente del fondo personalizado de WebBox OS.
+ * La imagen se guarda como Blob en IndexedDB, nunca como texto base64 en ajustes.
+ */
+const DB_NAME = 'webbox-backgrounds';
+const DB_VERSION = 1;
+const STORE_NAME = 'wallpapers';
+const RECORD_KEY = 'custom';
+const MAX_BACKGROUND_SIZE = 20 * 1024 * 1024;
+const ALLOWED_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'image/avif',
+  'image/bmp',
+]);
+
+let dbPromise = null;
+
+function openDb() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) {
+      reject(new Error('Este navegador no permite guardar fondos personalizados.'));
+      return;
+    }
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => {
+      dbPromise = null;
+      reject(request.error || new Error('No se pudo abrir el almacenamiento de fondos.'));
+    };
+    request.onblocked = () => reject(new Error('Cierra otras pestañas de WebBox OS e inténtalo de nuevo.'));
+  });
+  return dbPromise;
+}
+
+function transactionDone(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('No se pudo guardar el fondo.'));
+    tx.onabort = () => reject(tx.error || new Error('El guardado del fondo fue cancelado.'));
+  });
+}
+
+function requestResult(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('No se pudo leer el fondo.'));
+  });
+}
+
+/** Guarda una imagen raster para que siga disponible después de cerrar el navegador. */
+async function saveCustomBackground(file) {
+  if (!(file instanceof Blob)) throw new Error('Selecciona una imagen válida.');
+  if (!ALLOWED_TYPES.has(file.type)) {
+    throw new Error('Formato no compatible. Usa JPG, PNG, WEBP, GIF, AVIF o BMP.');
+  }
+  if (file.size <= 0) throw new Error('La imagen está vacía.');
+  if (file.size > MAX_BACKGROUND_SIZE) throw new Error('La imagen supera el límite de 20 MB.');
+
+  const db = await openDb();
+  const tx = db.transaction(STORE_NAME, 'readwrite');
+  tx.objectStore(STORE_NAME).put({
+    id: RECORD_KEY,
+    blob: file,
+    name: String(file.name || 'Fondo personalizado').slice(0, 180),
+    type: file.type,
+    updatedAt: Date.now(),
+  });
+  await transactionDone(tx);
+}
+
+/** Recupera el Blob del fondo personalizado, o null cuando aún no existe. */
+async function getCustomBackground() {
+  const db = await openDb();
+  const tx = db.transaction(STORE_NAME, 'readonly');
+  const record = await requestResult(tx.objectStore(STORE_NAME).get(RECORD_KEY));
+  return record?.blob instanceof Blob ? record.blob : null;
+}
+    Object.assign(exports, { saveCustomBackground, getCustomBackground });
+  };
   __modules["js/settings.js"] = function (module, exports, __require) {
 /**
  * Pantalla de Configuración.
@@ -1069,6 +1160,7 @@ const { storage } = __require("js/core/storage.js");
 const { bus } = __require("js/core/events.js");
 const { icon } = __require("js/icons.js");
 const { BACKGROUNDS } = __require("js/data/apps.js");
+const { getCustomBackground, saveCustomBackground } = __require("js/backgroundStore.js");
 const { esc, toast } = __require("js/ui.js");
 
 const TABS = [
@@ -1125,6 +1217,9 @@ class SettingsScreen {
     this.capturing = null; // acción que se está remapeando
     this.confirmReset = false;
     this.live = new Map(); // index -> { cells, bars }
+    this.customBackgroundUrl = null;
+    this.customBackgroundLoading = false;
+    this.customBackgroundVersion = 0;
 
     root.innerHTML = `
       <div class="settings">
@@ -1138,6 +1233,9 @@ class SettingsScreen {
     this.panelEl = root.querySelector('.settings-panel');
 
     root.addEventListener('click', (e) => this.#onClick(e));
+    root.addEventListener('change', (e) => {
+      if (e.target.matches?.('[data-bg-upload]')) this.#onBackgroundUpload(e.target);
+    });
     // Las pestañas cambian el panel en cuanto reciben el foco.
     root.addEventListener('tvfocus', (e) => {
       const tab = e.target.closest?.('[data-tab]');
@@ -1238,6 +1336,7 @@ class SettingsScreen {
     this.gamepad.setWatching(this.active === 'test');
     if (this.active === 'test') this.#cacheLive();
     this.panelEl.scrollTop = 0;
+    if (this.active === 'background') this.#loadCustomBackgroundPreview();
   }
 
   // ----------------------------------------------------------- bloques UI
@@ -1465,7 +1564,66 @@ class SettingsScreen {
         <span class="tick">${icon('check')}</span>
       </div>`,
     ).join('');
-    return `<h2 class="panel-title">Fondo de pantalla</h2><div class="bg-grid">${tiles}</div>`;
+    return `
+      <h2 class="panel-title">Fondo de pantalla</h2>
+      <p class="background-description">Elige uno de los fondos incluidos o agrega una imagen de tu equipo.</p>
+      ${this.#action('bg-add', 'bg:add', 'Agregar fondo', 'Selecciona una imagen JPG, PNG, WEBP, GIF, AVIF o BMP (máximo 20 MB)', 'plus')}
+      <input type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/bmp" data-bg-upload hidden>
+      <div class="bg-grid" data-bg-grid>${tiles}</div>`;
+  }
+
+  async #loadCustomBackgroundPreview() {
+    if (this.customBackgroundUrl || this.customBackgroundLoading) {
+      this.#syncCustomBackgroundTile();
+      return;
+    }
+    this.customBackgroundLoading = true;
+    const version = ++this.customBackgroundVersion;
+    try {
+      const blob = await getCustomBackground();
+      if (version !== this.customBackgroundVersion || this.active !== 'background') return;
+      if (blob) this.customBackgroundUrl = URL.createObjectURL(blob);
+      this.#syncCustomBackgroundTile();
+    } catch (error) {
+      console.warn('[WebBox OS] No se pudo cargar la vista previa del fondo.', error);
+    } finally {
+      if (version === this.customBackgroundVersion) this.customBackgroundLoading = false;
+    }
+  }
+
+  #syncCustomBackgroundTile() {
+    const grid = this.panelEl.querySelector('[data-bg-grid]');
+    if (!grid) return;
+    grid.querySelector('[data-id="custom"]')?.remove();
+    if (!this.customBackgroundUrl) return;
+    const tile = document.createElement('div');
+    tile.className = `bg-tile${config.get('background') === 'custom' ? ' selected' : ''}`;
+    tile.setAttribute('role', 'button');
+    tile.setAttribute('tabindex', '-1');
+    tile.setAttribute('data-focusable', '');
+    tile.dataset.zone = 'settings-panel';
+    tile.dataset.fid = 'bg:custom';
+    tile.dataset.act = 'bg';
+    tile.dataset.id = 'custom';
+    tile.style.backgroundImage = `url("${this.customBackgroundUrl}")`;
+    tile.innerHTML = `<span>Mi fondo</span><span class="tick">${icon('check')}</span>`;
+    grid.append(tile);
+  }
+
+  async #onBackgroundUpload(input) {
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    try {
+      await saveCustomBackground(file);
+      if (this.customBackgroundUrl) URL.revokeObjectURL(this.customBackgroundUrl);
+      this.customBackgroundUrl = URL.createObjectURL(file);
+      config.set('background', 'custom');
+      this.rerender(true);
+      toast(`Fondo agregado: ${file.name}`);
+    } catch (error) {
+      toast(error?.message || 'No se pudo agregar el fondo.', 4200);
+    }
   }
 
   // ---------------------------------------------------------------- Pantalla
@@ -1514,8 +1672,15 @@ class SettingsScreen {
         this.rerender(true);
         break;
       case 'bg':
+        if (el.dataset.id === 'custom' && !this.customBackgroundUrl) {
+          toast('Primero agrega una imagen con el botón Agregar fondo.');
+          break;
+        }
         config.set('background', el.dataset.id);
         this.rerender(true);
+        break;
+      case 'bg-add':
+        this.panelEl.querySelector('[data-bg-upload]')?.click();
         break;
       case 'remap':
         this.#startCapture(el.dataset.action);
@@ -2920,6 +3085,62 @@ class FilesScreen {
     }
   }
 
+  /** Busca ROMs SNES en todas las subcarpetas de la raíz activa del gestor. */
+  async findSnesRoms({ maxDepth = 12, maxDirectories = 1500, maxFiles = 3000 } = {}) {
+    if (!this.rootDirectory) {
+      throw new Error('Primero abre una carpeta o el almacenamiento interno desde el Gestor de archivos.');
+    }
+
+    const extensions = new Set(['sfc', 'smc', 'fig', 'gd3', 'gd7', 'dx2', 'bsx', 'swc']);
+    const roms = [];
+    let directoriesVisited = 0;
+
+    const visit = async (directory, relativePath, depth) => {
+      if (depth > maxDepth || directoriesVisited >= maxDirectories || roms.length >= maxFiles) return;
+      directoriesVisited += 1;
+      const entries = await listEntries(directory);
+
+      for (const entry of entries) {
+        if (roms.length >= maxFiles) break;
+        if (entry.kind === 'directory') {
+          const child = {
+            backend: entry.backend,
+            handle: entry.handle,
+            name: entry.name,
+            path: entry.path,
+            kind: 'directory',
+          };
+          await visit(child, relativePath ? `${relativePath}/${entry.name}` : entry.name, depth + 1);
+          continue;
+        }
+
+        const ext = extension(entry.name);
+        if (!extensions.has(ext)) continue;
+        try {
+          const file = await getEntryFile(entry);
+          roms.push({
+            name: entry.name,
+            path: relativePath ? `${relativePath}/${entry.name}` : entry.name,
+            size: file.size,
+            file,
+            entry,
+          });
+        } catch (error) {
+          console.warn(`[WebBox OS] No se pudo leer la ROM ${entry.name}.`, error);
+        }
+      }
+    };
+
+    await visit(this.rootDirectory, '', 0);
+    roms.sort((a, b) => a.path.localeCompare(b.path, 'es', { sensitivity: 'base', numeric: true }));
+    return {
+      roms,
+      rootName: this.rootDirectory.name,
+      backend: this.rootDirectory.backend,
+      truncated: directoriesVisited >= maxDirectories || roms.length >= maxFiles,
+    };
+  }
+
   async #setRoot(root) {
     this.rootDirectory = root;
     this.stack = [root];
@@ -3416,6 +3637,316 @@ class FilesScreen {
 }
     Object.assign(exports, { FilesScreen });
   };
+  __modules["js/games.js"] = function (module, exports, __require) {
+/**
+ * Juegos: biblioteca SNES integrada con el Gestor de archivos.
+ * EmulatorJS ejecuta el núcleo Snes9x dentro de un iframe aislado del launcher.
+ */
+const { bus } = __require("js/core/events.js");
+const { icon } = __require("js/icons.js");
+const { esc, toast } = __require("js/ui.js");
+
+const EMULATOR_DATA = 'https://cdn.emulatorjs.org/stable/data/';
+const GUIDE_BUTTON = 16;
+const EXIT_HOLD_MS = 1500;
+
+const ROM_EXTENSIONS = new Set(['sfc', 'smc', 'fig', 'gd3', 'gd7', 'dx2', 'bsx', 'swc']);
+
+function isSnesRomName(name) {
+  const match = String(name ?? '').toLowerCase().match(/\.([a-z0-9]+)$/);
+  return Boolean(match && ROM_EXTENSIONS.has(match[1]));
+}
+
+function readableSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return 'Tamaño desconocido';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+}
+
+class GamesScreen {
+  constructor({ root, focus, files, onOpenFiles }) {
+    this.root = root;
+    this.focus = focus;
+    this.files = files;
+    this.onOpenFiles = onOpenFiles;
+    this.roms = [];
+    this.hasScanned = false;
+    this.scanning = false;
+    this.isPlaying = false;
+    this.currentRom = null;
+    this.romUrl = null;
+    this.iframe = null;
+    this.exitHoldTimer = 0;
+
+    this.root.addEventListener('click', (event) => this.#onClick(event));
+    window.addEventListener('message', (event) => {
+      if (event.source !== this.iframe?.contentWindow) return;
+      if (event.data?.source === 'webbox-snes' && event.data?.action === 'exit') this.stop();
+    });
+    bus.on('gamepad:button', ({ button, pressed }) => {
+      if (!this.isPlaying || button !== GUIDE_BUTTON) return;
+      if (pressed) {
+        clearTimeout(this.exitHoldTimer);
+        this.exitHoldTimer = setTimeout(() => {
+          if (!this.isPlaying) return;
+          this.stop();
+          toast('Juego cerrado desde el mando.');
+        }, EXIT_HOLD_MS);
+      } else {
+        clearTimeout(this.exitHoldTimer);
+        this.exitHoldTimer = 0;
+      }
+    });
+  }
+
+  render() {
+    this.root.innerHTML = `
+      <h1 class="screen-title">Juegos</h1>
+      <p class="games-sub">Juega títulos de Super Nintendo con tus ROMs guardadas en el Gestor de archivos.</p>
+      <section class="games-console-card">
+        <div class="games-console-art">${icon('gamepad')}</div>
+        <div class="games-console-info">
+          <span class="games-kicker">CONSOLA DISPONIBLE</span>
+          <h2>Super Nintendo (SNES)</h2>
+          <p>EmulatorJS · Núcleo Snes9x · Compatible con mando, teclado y controles en pantalla.</p>
+          <div class="games-actions">
+            <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+                 data-fid="games:scan" data-act="games-scan">${icon('search')}Buscar ROMs en Archivos</div>
+            <div class="btn btn--secondary" role="button" tabindex="-1" data-focusable data-zone="main"
+                 data-fid="games:files" data-act="games-files">${icon('folder')}Abrir Gestor de archivos</div>
+          </div>
+        </div>
+      </section>
+      <section class="games-library" data-games-library>
+        <div class="games-library-head">
+          <div>
+            <h2>Biblioteca de juegos</h2>
+            <p data-games-location>Busca ROMs dentro de la ubicación abierta en el Gestor de archivos.</p>
+          </div>
+          <span class="games-count" data-games-count>0 juegos</span>
+        </div>
+        <div class="games-rom-list" data-games-rom-list>
+          <div class="games-empty">
+            <span>${icon('folder')}</span>
+            <h3>Aún no hay ROMs cargadas</h3>
+            <p>Abre el Gestor de archivos, selecciona la carpeta donde guardas tus ROMs o abre el almacenamiento interno y vuelve aquí para buscarlas.</p>
+          </div>
+        </div>
+      </section>
+      <section class="games-player" data-games-player hidden>
+        <div class="games-player-head">
+          <div class="games-now-playing">
+            <span class="games-kicker">REPRODUCIENDO</span>
+            <strong data-games-current-name></strong>
+          </div>
+          <div class="games-player-actions">
+            <div class="btn btn--sm" role="button" tabindex="-1" data-focusable data-zone="main"
+                 data-fid="games:fullscreen" data-act="games-fullscreen">${icon('fullscreen')}Pantalla completa</div>
+            <div class="btn btn--sm" role="button" tabindex="-1" data-focusable data-zone="main"
+                 data-fid="games:stop" data-act="games-stop">${icon('close')}Salir del juego</div>
+          </div>
+        </div>
+        <div class="games-frame-wrap" data-games-frame></div>
+        <p class="games-controls-hint">Mando: cruceta + botones · Teclado: flechas y teclas configuradas por EmulatorJS · Mantén GUIDE 1,5 s para salir.</p>
+      </section>`;
+    this.#renderRomList();
+  }
+
+  focusEntry() {
+    this.focus.focusFirst('#screen-games [data-zone="main"]');
+    if (!this.hasScanned && this.files.rootDirectory) this.scan();
+  }
+
+  async handleBack() {
+    if (!this.isPlaying) return false;
+    this.stop();
+    return true;
+  }
+
+  async scan() {
+    if (this.scanning) return;
+    this.scanning = true;
+    const list = this.root.querySelector('[data-games-rom-list]');
+    if (list) list.innerHTML = '<div class="games-empty"><span class="games-spinner"></span><h3>Buscando ROMs…</h3><p>Revisando las carpetas del Gestor de archivos.</p></div>';
+    try {
+      const result = await this.files.findSnesRoms();
+      this.roms = result.roms;
+      this.hasScanned = true;
+      const backendNames = { native: 'carpeta del equipo', opfs: 'almacenamiento OPFS', idb: 'almacenamiento IndexedDB' };
+      const location = this.root.querySelector('[data-games-location]');
+      if (location) location.textContent = `${result.rootName} · ${backendNames[result.backend] || 'almacenamiento interno'}`;
+      if (result.truncated) toast('La búsqueda alcanzó el límite de seguridad. Se muestran los primeros resultados.', 4200);
+      this.#renderRomList();
+      toast(`${this.roms.length} ROM${this.roms.length === 1 ? '' : 's'} SNES encontrada${this.roms.length === 1 ? '' : 's'}.`);
+    } catch (error) {
+      this.roms = [];
+      this.hasScanned = false;
+      this.#renderRomList(error?.message || 'No se pudieron buscar las ROMs.');
+      toast(error?.message || 'No se pudieron buscar las ROMs.', 4200);
+    } finally {
+      this.scanning = false;
+      this.focus.focusByFid('games:scan');
+    }
+  }
+
+  #renderRomList(message = '') {
+    const list = this.root.querySelector('[data-games-rom-list]');
+    const count = this.root.querySelector('[data-games-count]');
+    if (!list) return;
+    if (count) count.textContent = `${this.roms.length} juego${this.roms.length === 1 ? '' : 's'}`;
+    if (!this.roms.length) {
+      const text = message || (this.hasScanned
+        ? 'No encontramos ROMs SNES. Aceptamos archivos .sfc, .smc, .fig, .gd3, .gd7, .dx2, .bsx y .swc.'
+        : 'Busca ROMs dentro de la ubicación abierta en el Gestor de archivos.');
+      list.innerHTML = `
+        <div class="games-empty">
+          <span>${icon('gamepad')}</span>
+          <h3>${this.hasScanned ? 'No se encontraron juegos' : 'Aún no hay ROMs cargadas'}</h3>
+          <p>${esc(text)}</p>
+        </div>`;
+      return;
+    }
+    list.innerHTML = this.roms.map((rom, index) => `
+      <article class="games-rom-card">
+        <div class="games-rom-icon">${icon('gamepad')}</div>
+        <div class="games-rom-info">
+          <strong>${esc(rom.name)}</strong>
+          <span>${esc(rom.path)} · ${readableSize(rom.size)}</span>
+        </div>
+        <div class="btn btn--sm" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="games:rom:${index}" data-act="games-play" data-index="${index}">
+          ${icon('play')}Jugar
+        </div>
+      </article>`).join('');
+  }
+
+  async #onClick(event) {
+    const action = event.target.closest('[data-act]');
+    if (!action) return;
+    switch (action.dataset.act) {
+      case 'games-scan':
+        await this.scan();
+        break;
+      case 'games-files':
+        this.onOpenFiles?.();
+        break;
+      case 'games-play':
+        await this.play(Number(action.dataset.index));
+        break;
+      case 'games-stop':
+        this.stop();
+        break;
+      case 'games-fullscreen':
+        this.#fullscreen();
+        break;
+      default:
+        break;
+    }
+  }
+
+  async play(index) {
+    const rom = this.roms[index];
+    if (!rom || this.isPlaying) return;
+    this.stop({ restore: false });
+    this.currentRom = rom;
+    this.romUrl = URL.createObjectURL(rom.file);
+    this.isPlaying = true;
+    const library = this.root.querySelector('[data-games-library]');
+    const player = this.root.querySelector('[data-games-player]');
+    const frameHost = this.root.querySelector('[data-games-frame]');
+    const title = this.root.querySelector('[data-games-current-name]');
+    if (library) library.hidden = true;
+    if (player) player.hidden = false;
+    if (title) title.textContent = rom.name;
+
+    const iframe = document.createElement('iframe');
+    iframe.className = 'games-emulator-frame';
+    iframe.title = `Emulador SNES: ${rom.name}`;
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-pointer-lock allow-forms');
+    iframe.setAttribute('allow', 'autoplay; fullscreen; gamepad');
+    iframe.setAttribute('allowfullscreen', '');
+    iframe.setAttribute('tabindex', '0');
+    iframe.srcdoc = this.#emulatorDocument(this.romUrl);
+    this.iframe = iframe;
+    frameHost?.replaceChildren(iframe);
+    iframe.addEventListener('load', () => iframe.focus(), { once: true });
+    iframe.focus();
+    toast(`Iniciando ${rom.name}…`);
+  }
+
+  #emulatorDocument(romUrl) {
+    const scriptOpen = '<scr' + 'ipt>';
+    const scriptClose = '</scr' + 'ipt>';
+    return `<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Emulador SNES · WebBox OS</title>
+<style>
+  *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:#fff;font:14px system-ui,sans-serif}
+  #game{width:100%;height:100%;min-height:260px}#load-error{display:none;position:absolute;inset:0;z-index:50;padding:28px;background:#111827;color:#fecaca;line-height:1.6}
+</style>
+</head>
+<body>
+  <div id="game"></div>
+  <div id="load-error">No se pudo descargar el emulador SNES. Comprueba tu conexión a Internet y vuelve a cargar el juego.</div>
+  ${scriptOpen}
+    window.EJS_player = '#game';
+    window.EJS_core = 'snes';
+    window.EJS_language = 'es-419';
+    window.EJS_gameUrl = ${JSON.stringify(romUrl)};
+    window.EJS_pathtodata = ${JSON.stringify(EMULATOR_DATA)};
+    window.EJS_biosUrl = '';
+    window.EJS_mouse = false;
+    window.EJS_multitap = false;
+    window.EJS_threads = false;
+    window.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' || event.key === 'BrowserBack') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        window.parent.postMessage({ source: 'webbox-snes', action: 'exit' }, '*');
+      }
+    }, true);
+    var loader = document.createElement('script');
+    loader.src = ${JSON.stringify(`${EMULATOR_DATA}loader.js`)};
+    loader.onerror = function () { document.getElementById('load-error').style.display = 'block'; };
+    document.body.appendChild(loader);
+  ${scriptClose}
+</body>
+</html>`;
+  }
+
+  #fullscreen() {
+    const target = this.iframe;
+    if (!target) return;
+    const request = target.requestFullscreen || target.webkitRequestFullscreen;
+    if (!request) return;
+    Promise.resolve(request.call(target)).catch(() => toast('No se pudo activar pantalla completa.'));
+  }
+
+  stop({ restore = true } = {}) {
+    if (!this.isPlaying && !this.iframe && !this.romUrl) return;
+    clearTimeout(this.exitHoldTimer);
+    this.exitHoldTimer = 0;
+    this.isPlaying = false;
+    this.iframe?.remove();
+    this.iframe = null;
+    if (this.romUrl) URL.revokeObjectURL(this.romUrl);
+    this.romUrl = null;
+    this.currentRom = null;
+    const library = this.root.querySelector('[data-games-library]');
+    const player = this.root.querySelector('[data-games-player]');
+    const frameHost = this.root.querySelector('[data-games-frame]');
+    if (frameHost) frameHost.replaceChildren();
+    if (library) library.hidden = false;
+    if (player) player.hidden = true;
+    if (restore) this.focus.focusByFid('games:scan');
+  }
+}
+    Object.assign(exports, { isSnesRomName, GamesScreen });
+  };
   __modules["js/data/library.js"] = function (module, exports, __require) {
 /**
  * Contenido inicial de las bibliotecas. Aquí puedes agregar cosas editando el
@@ -3457,10 +3988,12 @@ const { LibraryScreen } = __require("js/library.js");
 const { Player } = __require("js/player.js");
 const { Dialog } = __require("js/dialog.js");
 const { FilesScreen } = __require("js/files.js");
+const { GamesScreen } = __require("js/games.js");
 const { getHandle, saveHandle, removeHandle, getStoredFile } = __require("js/fileSystem.js");
 const { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS } = __require("js/data/library.js");
 const { parseMediaUrl } = __require("js/core/media.js");
 const { BACKGROUNDS } = __require("js/data/apps.js");
+const { getCustomBackground } = __require("js/backgroundStore.js");
 const { hydrateIcons, icon } = __require("js/icons.js");
 const { esc, toast } = __require("js/ui.js");
 
@@ -3479,6 +4012,7 @@ class WebBoxOS {
       youtube: $('#screen-youtube'),
       movies: $('#screen-movies'),
       files: $('#screen-files'),
+      games: $('#screen-games'),
       emulators: $('#screen-emulators'),
       settings: $('#screen-settings'),
     };
@@ -3487,6 +4021,8 @@ class WebBoxOS {
     this.overlayReturnFid = null;
     this.lastPointerMove = 0;
     this.cursorTimer = 0;
+    this.backgroundRequest = 0;
+    this.backgroundObjectUrl = null;
 
     this.focus = new FocusManager(this.shell);
     this.gamepad = new GamepadManager();
@@ -3546,6 +4082,12 @@ class WebBoxOS {
       onOpenMedia: (file) => this.player.openFile(file),
       onAddMovie: (entry, name) => this.#addMovieFromFiles(entry, name),
     });
+    this.games = new GamesScreen({
+      root: this.screens.games,
+      focus: this.focus,
+      files: this.files,
+      onOpenFiles: () => this.navigate('files', { enter: true }),
+    });
     this.settings = new SettingsScreen({
       root: this.screens.settings,
       focus: this.focus,
@@ -3558,6 +4100,7 @@ class WebBoxOS {
     this.launcher.render();
     for (const lib of Object.values(this.libraries)) lib.render();
     this.files.render();
+    this.games.render();
     this.#renderEmulators();
     this.settings.render();
     this.#applyDisplay();
@@ -3601,7 +4144,7 @@ class WebBoxOS {
       if (item) this.navigate(item.dataset.screen, { enter: true });
     });
     this.screens.emulators.addEventListener('click', (e) => {
-      if (e.target.closest('[data-act="emulators-home"]')) this.navigate('home', { enter: true });
+      if (e.target.closest('[data-act="emulators-snes"]')) this.navigate('games', { enter: true });
     });
     bus.on('focus:change', () => this.#syncSidebar());
 
@@ -3646,6 +4189,8 @@ class WebBoxOS {
 
     // Con el reproductor abierto, la primera pulsación solo muestra los controles ocultos.
     if (this.player.handleAction(action)) return;
+    // Mientras se juega, el propio emulador recibe las entradas del mando.
+    if (this.games?.isPlaying) return;
 
     switch (action) {
       case 'up':
@@ -3675,6 +4220,7 @@ class WebBoxOS {
    */
   navigate(name, { enter = false } = {}) {
     if (!this.screens[name]) return;
+    if (this.current === 'games' && name !== 'games') this.games?.stop({ restore: false });
 
     if (name !== this.current) {
       for (const [key, el] of Object.entries(this.screens)) el.hidden = key !== name;
@@ -3696,6 +4242,8 @@ class WebBoxOS {
       this.settings.focusEntry();
     } else if (name === 'files') {
       this.files.focusEntry();
+    } else if (name === 'games') {
+      this.games.focusEntry();
     } else if (name === 'emulators') {
       this.focus.focusFirst('#screen-emulators [data-zone="main"]');
     } else {
@@ -3717,6 +4265,7 @@ class WebBoxOS {
       return;
     }
     if (this.current === 'files' && await this.files.handleBack()) return;
+    if (this.current === 'games' && await this.games.handleBack()) return;
     if (this.settings.handleBack()) return;
     if (this.current !== 'home') {
       this.navigate('home', { enter: true });
@@ -3734,6 +4283,7 @@ class WebBoxOS {
     if (this.dialog.isOpen) this.dialog.close({ restore: false });
     if (this.player.isOpen) this.player.close({ restore: false });
     if (this.files?.viewerOpen) this.files.closeViewer({ restore: false });
+    this.games?.stop({ restore: false });
     if (this.files?.targetOpen) this.files.closeTargetPicker();
     if (this.overlayOpen) this.closeOverlay({ restore: false });
     if (this.settings.capturing) this.settings.cancelCapture();
@@ -3745,14 +4295,26 @@ class WebBoxOS {
   #renderEmulators() {
     this.screens.emulators.innerHTML = `
       <h1 class="screen-title">Emuladores</h1>
-      <p class="files-sub">Tu espacio para organizar y ejecutar emuladores desde WebBox OS.</p>
-      <div class="emulators-empty">
-        <div class="emulators-empty-icon">${icon('gamepad')}</div>
-        <h2>Emuladores</h2>
-        <p>Esta sección ya está disponible en el menú lateral. La integración de núcleos y consolas se añadirá en una siguiente fase.</p>
-        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
-             data-fid="emulators:home" data-act="emulators-home">${icon('home')}Volver al inicio</div>
-      </div>`;
+      <p class="files-sub">Consolas retro listas para ejecutar tus juegos desde WebBox OS.</p>
+      <section class="emulators-catalog">
+        <article class="emulators-console-card">
+          <div class="emulators-console-art">${icon('gamepad')}</div>
+          <div class="emulators-console-info">
+            <div class="emulators-card-topline">
+              <span class="emulators-kicker">CONSOLA DISPONIBLE</span>
+              <span class="emulators-status"><i></i> Lista para jugar</span>
+            </div>
+            <h2>Super Nintendo (SNES)</h2>
+            <p>EmulatorJS · Snes9x · ROMs desde el Gestor de archivos · Mando y teclado.</p>
+            <div class="emulators-card-actions">
+              <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+                   data-fid="emulators:snes" data-act="emulators-snes">${icon('play')}Abrir SNES</div>
+              <span class="emulators-card-note">Formatos: SFC · SMC · FIG · SWC</span>
+            </div>
+          </div>
+        </article>
+        <p class="emulators-help">Tus ROMs no se incluyen en WebBox OS. Guarda tus archivos en el Gestor de archivos y abre SNES para buscarlos y ejecutarlos.</p>
+      </section>`;
   }
 
   // -------------------------------------------------------------- overlay
@@ -3931,10 +4493,44 @@ class WebBoxOS {
 
     $('#hints').hidden = !config.get('showHints');
 
-    const bg = BACKGROUNDS.find((b) => b.id === config.get('background')) ?? BACKGROUNDS[0];
-    $('#bg').style.backgroundImage = `url("${bg.file}")`;
-
+    this.#applyBackground();
     this.#tickClock();
+  }
+
+  async #applyBackground() {
+    const request = ++this.backgroundRequest;
+    const selected = config.get('background');
+    let imageUrl = '';
+    let isTemporaryUrl = false;
+
+    if (selected === 'custom') {
+      try {
+        const blob = await getCustomBackground();
+        if (request !== this.backgroundRequest) return;
+        if (blob) {
+          imageUrl = URL.createObjectURL(blob);
+          isTemporaryUrl = true;
+        }
+      } catch (error) {
+        console.warn('[WebBox OS] No se pudo recuperar el fondo personalizado.', error);
+      }
+      if (!imageUrl) {
+        if (request !== this.backgroundRequest) return;
+        config.set('background', 'aurora');
+        return;
+      }
+    } else {
+      const bg = BACKGROUNDS.find((b) => b.id === selected) ?? BACKGROUNDS[0];
+      imageUrl = bg.file;
+    }
+
+    if (request !== this.backgroundRequest) {
+      if (isTemporaryUrl) URL.revokeObjectURL(imageUrl);
+      return;
+    }
+    if (this.backgroundObjectUrl) URL.revokeObjectURL(this.backgroundObjectUrl);
+    this.backgroundObjectUrl = isTemporaryUrl ? imageUrl : null;
+    $('#bg').style.backgroundImage = `url("${imageUrl}")`;
   }
 
   #startClock() {

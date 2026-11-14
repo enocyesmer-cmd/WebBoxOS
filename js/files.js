@@ -179,6 +179,62 @@ export class FilesScreen {
     }
   }
 
+  /** Busca ROMs SNES en todas las subcarpetas de la raíz activa del gestor. */
+  async findSnesRoms({ maxDepth = 12, maxDirectories = 1500, maxFiles = 3000 } = {}) {
+    if (!this.rootDirectory) {
+      throw new Error('Primero abre una carpeta o el almacenamiento interno desde el Gestor de archivos.');
+    }
+
+    const extensions = new Set(['sfc', 'smc', 'fig', 'gd3', 'gd7', 'dx2', 'bsx', 'swc']);
+    const roms = [];
+    let directoriesVisited = 0;
+
+    const visit = async (directory, relativePath, depth) => {
+      if (depth > maxDepth || directoriesVisited >= maxDirectories || roms.length >= maxFiles) return;
+      directoriesVisited += 1;
+      const entries = await listEntries(directory);
+
+      for (const entry of entries) {
+        if (roms.length >= maxFiles) break;
+        if (entry.kind === 'directory') {
+          const child = {
+            backend: entry.backend,
+            handle: entry.handle,
+            name: entry.name,
+            path: entry.path,
+            kind: 'directory',
+          };
+          await visit(child, relativePath ? `${relativePath}/${entry.name}` : entry.name, depth + 1);
+          continue;
+        }
+
+        const ext = extension(entry.name);
+        if (!extensions.has(ext)) continue;
+        try {
+          const file = await getEntryFile(entry);
+          roms.push({
+            name: entry.name,
+            path: relativePath ? `${relativePath}/${entry.name}` : entry.name,
+            size: file.size,
+            file,
+            entry,
+          });
+        } catch (error) {
+          console.warn(`[WebBox OS] No se pudo leer la ROM ${entry.name}.`, error);
+        }
+      }
+    };
+
+    await visit(this.rootDirectory, '', 0);
+    roms.sort((a, b) => a.path.localeCompare(b.path, 'es', { sensitivity: 'base', numeric: true }));
+    return {
+      roms,
+      rootName: this.rootDirectory.name,
+      backend: this.rootDirectory.backend,
+      truncated: directoriesVisited >= maxDirectories || roms.length >= maxFiles,
+    };
+  }
+
   async #setRoot(root) {
     this.rootDirectory = root;
     this.stack = [root];

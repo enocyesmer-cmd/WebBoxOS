@@ -30,6 +30,8 @@ const { config, DEFAULT_MAPPING } = await import(`${ROOT}/core/config.js`);
 const { FocusManager } = await import(`${ROOT}/core/focus.js`);
 const { GamepadManager, cleanPadName } = await import(`${ROOT}/input/gamepad.js`);
 const { KeyboardInput } = await import(`${ROOT}/input/keyboard.js`);
+const { isSnesRomName } = await import(`${ROOT}/games.js`);
+const { APPS } = await import(`${ROOT}/data/apps.js`);
 
 // ---------- elemento simulado
 class FakeEl {
@@ -352,6 +354,21 @@ await test('media: formato de tiempo', () => {
   assert.equal(formatTime(83), '1:23');
   assert.equal(formatTime(3700), '1:01:40');
   assert.equal(formatTime(NaN), '0:00');
+});
+
+console.log('Biblioteca SNES');
+await test('acepta extensiones habituales de ROM SNES sin distinguir mayúsculas', () => {
+  for (const name of ['juego.sfc', 'JUEGO.SMC', 'demo.fig', 'bsx.gd3', 'cartucho.gd7', 'extra.dx2', 'sufami.bsx', 'copia.swc']) {
+    assert.equal(isSnesRomName(name), true, name);
+  }
+});
+await test('rechaza archivos que no son ROM SNES', () => {
+  for (const name of ['juego.nes', 'video.mp4', 'juego.zip', 'sin-extension', '.hidden']) {
+    assert.equal(isSnesRomName(name), false, name);
+  }
+});
+await test('Juegos se abre como pantalla real desde el launcher', () => {
+  assert.equal(APPS.find((app) => app.id === 'games')?.screen, 'games');
 });
 
 console.log(`\n${passed} pruebas correctas`);

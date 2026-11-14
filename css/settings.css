@@ -386,3 +386,23 @@
 .last-btn b {
   color: var(--text);
 }
+
+/* Fondo personalizado */
+.background-description {
+  margin: -0.45rem 0 1rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.settings-panel [data-act="bg-add"] {
+  border: 1px solid rgba(110, 168, 255, 0.28);
+  background: rgba(110, 168, 255, 0.09);
+}
+
+.settings-panel [data-act="bg-add"] .setting-icon {
+  color: var(--accent);
+}
+
+.bg-tile[data-id="custom"] {
+  border: 1px solid rgba(110, 168, 255, 0.55);
+}

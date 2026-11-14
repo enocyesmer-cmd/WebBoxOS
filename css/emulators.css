@@ -1,0 +1,135 @@
+/* Catálogo de consolas disponibles */
+.emulators-catalog {
+  padding: 1.4rem 3rem 2rem 2rem;
+}
+
+.emulators-console-card {
+  display: flex;
+  align-items: center;
+  gap: 1.7rem;
+  max-width: 68rem;
+  min-height: 14rem;
+  padding: 1.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 1.4rem;
+  background: linear-gradient(115deg, rgba(110, 168, 255, 0.14), rgba(124, 58, 237, 0.13) 55%, rgba(255, 255, 255, 0.035));
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.16);
+}
+
+.emulators-console-art {
+  width: 7.2rem;
+  height: 7.2rem;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 1.5rem;
+  background: rgba(110, 168, 255, 0.18);
+  color: #83b7ff;
+}
+
+.emulators-console-art .icon {
+  width: 4rem;
+  height: 4rem;
+}
+
+.emulators-console-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.emulators-card-topline,
+.emulators-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.emulators-card-topline {
+  justify-content: space-between;
+}
+
+.emulators-kicker {
+  color: #a9caff;
+  font-size: 0.76rem;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+}
+
+.emulators-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.42rem 0.75rem;
+  border: 1px solid rgba(74, 222, 128, 0.2);
+  border-radius: 99px;
+  background: rgba(74, 222, 128, 0.08);
+  color: #86efac;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.emulators-status i {
+  width: 0.48rem;
+  height: 0.48rem;
+  border-radius: 50%;
+  background: #4ade80;
+  box-shadow: 0 0 0.7rem rgba(74, 222, 128, 0.7);
+}
+
+.emulators-console-info h2 {
+  margin-top: 0.65rem;
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.emulators-console-info p {
+  margin: 0.5rem 0 1.2rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.emulators-card-actions .btn {
+  min-height: 2.8rem;
+}
+
+.emulators-card-note {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.emulators-help {
+  max-width: 68rem;
+  margin-top: 1rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 760px) {
+  .emulators-catalog {
+    padding: 1rem;
+  }
+
+  .emulators-console-card {
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 1.1rem;
+  }
+
+  .emulators-console-art {
+    width: 4.5rem;
+    height: 4.5rem;
+    border-radius: 1rem;
+  }
+
+  .emulators-console-art .icon {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+
+  .emulators-console-info h2 {
+    font-size: 1.2rem;
+  }
+}
