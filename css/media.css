@@ -389,3 +389,172 @@ body.player-open #toasts {
 .menu-btn.btn--danger.is-focused {
   background: rgba(239, 68, 68, 0.55);
 }
+
+/* ------------------------------------------------ Películas | Series (pestañas) */
+
+.lib-actions-end {
+  display: contents;
+}
+
+.lib-actions--tabs {
+  align-items: center;
+}
+
+.lib-actions--tabs .lib-actions-end {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-left: auto;
+}
+
+.lib-tabs {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.35rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 1.7rem;
+  border-radius: 999px;
+  border: 0.12rem solid transparent;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tab .icon {
+  width: 1.4rem;
+  height: 1.4rem;
+}
+
+/* Pestaña activa: relleno de acento; con foco: blanco (igual que los demás botones) */
+.tab.is-active {
+  background: rgba(110, 168, 255, 0.28);
+  border-color: rgba(110, 168, 255, 0.55);
+  color: var(--text);
+}
+
+.tab.is-focused {
+  background: #fff;
+  border-color: #fff;
+  color: #0b1020;
+  box-shadow: 0 0 1.6rem rgba(255, 255, 255, 0.3);
+}
+
+/* Casilla "+" al final de cada fila de una serie */
+.card--add {
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 0.14rem dashed rgba(255, 255, 255, 0.3);
+}
+
+.card--add::before {
+  display: none;
+}
+
+.card--add .card-art {
+  position: static;
+}
+
+.card--add .card-art .icon {
+  width: 2.6rem;
+  height: 2.6rem;
+}
+
+/* ------------------------------------------- reproductor web incrustado (iframe) */
+
+/* El reproductor de otro sitio va debajo de una barra propia y recibe los clics:
+   así su botón de reproducir queda libre y los controles de WebBox OS no lo tapan. */
+#player.is-embed .player-stage {
+  inset: 4.6rem 0 0 0;
+}
+
+#player.is-embed .player-stage iframe {
+  pointer-events: auto;
+}
+
+#player.is-embed .player-top,
+#player.is-embed .player-controls {
+  top: 0;
+  bottom: auto;
+  height: 4.6rem;
+  padding: 0 1.2rem 0 1.6rem;
+  display: flex;
+  align-items: center;
+  background: #05070d;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+#player.is-embed .player-top {
+  right: auto;
+  max-width: 34%;
+  border-bottom: 0;
+}
+
+#player.is-embed .player-controls {
+  left: 34%;
+  justify-content: flex-end;
+  padding-left: 0;
+}
+
+#player.is-embed .player-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 1.25rem;
+}
+
+#player.is-embed .player-bar {
+  display: none;
+}
+
+#player.is-embed .player-buttons {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+#player.is-embed .btn--sm {
+  padding: 0.5rem 0.95rem;
+  font-size: 0.92rem;
+  white-space: nowrap;
+}
+
+/* La barra del reproductor web no se oculta nunca: el video no emite eventos hacia fuera */
+#player.is-embed.is-idle .player-top,
+#player.is-embed.is-idle .player-controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (max-width: 1100px) {
+  #player.is-embed .btn--sm [data-text] {
+    display: none;
+  }
+}
+
+/* Los avisos bajan debajo de la barra del reproductor web para no tapar sus botones */
+body.player-embed #toasts {
+  top: 5.6rem;
+}
+
+#player.is-embed {
+  background: #05070d;
+}
+
+/* Un poco de aire entre las pestañas y la primera fila */
+.lib-actions--tabs + .row,
+.lib-actions--tabs + .lib-empty {
+  margin-top: 1.4rem;
+}

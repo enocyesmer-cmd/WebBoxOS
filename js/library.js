@@ -5,7 +5,7 @@
  * js/data/library.js se mezcla con ello (y se puede ocultar con "Eliminar").
  */
 import { storage } from './core/storage.js';
-import { parseMediaUrl, youtubeThumb } from './core/media.js';
+import { parseMediaUrl, parsePlayable, extractIframeSources, youtubeThumb } from './core/media.js';
 import { icon } from './icons.js';
 import { api } from './api.js';
 import { esc, toast } from './ui.js';
@@ -38,8 +38,14 @@ export class LibraryScreen {
    * @param {{id:string, root:HTMLElement, defaults:object[], title:string, subtitle:string,
    *   defaultCategory:string, cardStyle:'wide'|'poster', accept:string[], emptyText:string,
    *   cardIcon:string, extraButtons?:{act:string,label:string,icon:string}[],
-   *   onPlay:(item:object, lib:LibraryScreen)=>void, onAdd:(lib:LibraryScreen)=>void,
+   *   addLabel?:string, rowAddLabel?:string, tabs?:{id:string,label:string,icon:string}[],
+   *   onTab?:(id:string)=>void,
+   *   onPlay:(item:object, lib:LibraryScreen)=>void,
+   *   onAdd:(lib:LibraryScreen, opts?:{category?:string})=>void,
    *   onExtra?:(act:string)=>void}} opts
+   * Con `tabs`, la pantalla muestra arriba las pestañas (p. ej. Películas | Series).
+   * Con `rowAddLabel`, cada fila termina en una casilla "+" que agrega a esa fila
+   * (en Series: otro capítulo de la misma serie).
    */
   constructor(opts) {
     Object.assign(this, opts);
@@ -50,6 +56,8 @@ export class LibraryScreen {
     this.root.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]');
       if (act?.dataset.act === 'lib-add') return this.onAdd(this);
+      if (act?.dataset.act === 'lib-add-in') return this.onAdd(this, { category: act.dataset.cat });
+      if (act?.dataset.act === 'lib-tab') return this.onTab?.(act.dataset.tab);
       if (act?.dataset.act === 'lib-ext') return this.onExtra?.(act.dataset.extra);
       const card = e.target.closest('[data-kind="lib"]');
       const item = card && this.items().find((i) => i.id === card.dataset.id);
@@ -90,10 +98,24 @@ export class LibraryScreen {
     }));
   }
 
+  /** Interpreta un enlace según lo que acepta esta biblioteca (null si no vale). */
+  parse(url) {
+    return (this.accept.includes('embed') ? parsePlayable : parseMediaUrl)(url);
+  }
+
+  /** Texto de error cuando un enlace no sirve en esta biblioteca. */
+  get invalidText() {
+    return this.accept.includes('embed')
+      ? 'Enlace no válido. Usa el enlace o el código <iframe> del reproductor, un enlace de YouTube o un archivo .mp4 / .webm.'
+      : 'Enlace no válido. Usa un enlace de YouTube o un archivo .mp4 / .webm.';
+  }
+
   /** Devuelve el elemento creado, o un string con el error. */
   add({ title, url, category, image, artist }) {
-    const media = parseMediaUrl(url);
-    if (!media) return 'Enlace no válido. Usa un enlace de YouTube o un archivo .mp4 / .webm.';
+    // Si pegaron código <iframe>, se guarda solo la dirección del reproductor.
+    const typed = extractIframeSources(url)[0] ?? String(url).trim();
+    const media = this.parse(typed);
+    if (!media) return this.invalidText;
     if (!this.accept.includes(media.type)) {
       return this.accept.includes('video')
         ? 'Este enlace no es de video.'
@@ -102,7 +124,7 @@ export class LibraryScreen {
     const item = {
       id: `u:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
       title: String(title).trim().slice(0, 120),
-      url: String(url).trim(),
+      url: media.type === 'embed' ? media.src : typed,
       category: String(category || '').trim().slice(0, 40),
       image: String(image || '').trim(),
       artist: String(artist || '').trim().slice(0, 80),
@@ -275,7 +297,7 @@ export class LibraryScreen {
   render() {
     const items = this.items();
     const buttons = [
-      { act: 'lib-add', label: 'Agregar', icon: 'plus' },
+      { act: 'lib-add', label: this.addLabel ?? 'Agregar', icon: 'plus' },
       ...(this.extraButtons ?? []).map((b) => ({ ...b, act: 'lib-ext' })),
     ];
     const actions = buttons
@@ -288,9 +310,21 @@ export class LibraryScreen {
       )
       .join('');
 
+    const tabs = this.tabs
+      ? `<div class="lib-tabs" role="tablist">${this.tabs
+          .map(
+            (t) => `
+        <div class="tab${t.id === this.id ? ' is-active' : ''}" role="tab" aria-selected="${t.id === this.id}"
+             tabindex="-1" data-focusable data-zone="main" data-fid="lib:${this.id}:tab:${t.id}"
+             data-act="lib-tab" data-tab="${t.id}">${icon(t.icon)}${esc(t.label)}</div>`,
+          )
+          .join('')}</div>`
+      : '';
+
     const rows = this.categories()
       .map((cat) => {
-        const cards = items.filter((i) => i.category === cat).map((i) => this.#card(i)).join('');
+        const cards = items.filter((i) => i.category === cat).map((i) => this.#card(i)).join('')
+          + (this.rowAddLabel ? this.#addCard(cat) : '');
         return `
           <section class="row" data-row="${esc(cat)}">
             <h2 class="row-title"><span class="row-icon">${icon(this.cardIcon)}</span>${esc(cat)}</h2>
@@ -302,17 +336,31 @@ export class LibraryScreen {
     this.root.innerHTML = `
       <h1 class="screen-title">${esc(this.title)}</h1>
       <p class="lib-sub">${esc(this.subtitle)}</p>
-      <div class="lib-actions">${actions}</div>
+      <div class="lib-actions${this.tabs ? ' lib-actions--tabs' : ''}">${tabs}<div class="lib-actions-end">${actions}</div></div>
       ${items.length ? rows : `<div class="lib-empty">${this.emptyText}</div>`}
     `;
     this.onChange?.();
   }
 
+  /** Casilla "+" al final de una fila: agrega otro elemento a esa misma fila. */
+  #addCard(cat) {
+    return `
+      <div class="card card--wide card--add" role="button" tabindex="-1" data-focusable data-zone="main"
+           data-fid="lib:${this.id}:addin:${hash(cat).toString(36)}" data-act="lib-add-in" data-cat="${esc(cat)}"
+           aria-label="${esc(this.rowAddLabel)}">
+        <span class="card-art">${icon('plus')}</span>
+        <span class="card-label">${esc(this.rowAddLabel)}</span>
+      </div>`;
+  }
+
   #card(item) {
-    const media = parseMediaUrl(item.url);
+    const media = parsePlayable(item.url);
     const img = item.image || youtubeThumb(media);
     const [c1, c2] = PALETTE[hash(item.title) % PALETTE.length];
-    const kind = item.fileHandleKey ? 'Archivo local' : (media?.type === 'youtube' ? (media.videoId ? 'YouTube' : 'Lista de YouTube') : 'Archivo de video');
+    let kind = 'Archivo de video';
+    if (item.fileHandleKey) kind = 'Archivo local';
+    else if (media?.type === 'youtube') kind = media.videoId ? 'YouTube' : 'Lista de YouTube';
+    else if (media?.type === 'embed') kind = `Reproductor web · ${media.host}`;
     const poster = this.cardStyle === 'poster';
     return `
       <div class="card ${poster ? 'card--poster' : 'card--wide'}${img ? ' card--media' : ''}"

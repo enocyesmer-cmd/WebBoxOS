@@ -16,11 +16,11 @@ import { api } from './api.js';
 import { Player } from './player.js';
 import { Dialog } from './dialog.js';
 import { FilesScreen } from './files.js';
-import { GamesScreen } from './games.js';
+import { EmulatorsScreen } from './emulators.js';
 import { MusicScreen } from './music.js';
 import { getHandle, saveHandle, removeHandle, getStoredFile, supportsFileSystemAccess } from './fileSystem.js';
-import { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS } from './data/library.js';
-import { parseMediaUrl } from './core/media.js';
+import { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS, SERIES_DEFAULTS } from './data/library.js';
+import { splitLinks } from './core/media.js';
 import { BACKGROUNDS } from './data/apps.js';
 import { getBackground, customIdFromValue } from './backgroundStore.js';
 import { CardMenu } from './cardMenu.js';
@@ -46,7 +46,7 @@ class WebBoxOS {
       movies: $('#screen-movies'),
       music: $('#screen-music'),
       files: $('#screen-files'),
-      games: $('#screen-games'),
+      emulators: $('#screen-emulators'),
       settings: $('#screen-settings'),
     };
     this.current = 'home';
@@ -76,11 +76,25 @@ class WebBoxOS {
     this.cardMenu = new CardMenu({ el: $('#cardmenu'), focus: this.focus });
     const common = {
       onPlay: (item, lib) => this.#playLibraryItem(item, lib),
-      onAdd: (lib) => this.#openAddDialog(lib),
+      onAdd: (lib, opts) => this.#openAddDialog(lib, opts),
       onExtra: (extra) => {
         if (extra === 'youtube-site') window.open('https://www.youtube.com/', '_blank', 'noopener');
       },
     };
+    // Películas y Series comparten la pantalla "Películas": dos paneles y, arriba, las pestañas.
+    const cinemaTabs = [
+      { id: 'movies', label: 'Películas', icon: 'film' },
+      { id: 'series', label: 'Series', icon: 'tv' },
+    ];
+    this.cinemaTab = storage.get('cinemaTab', 'movies') === 'series' ? 'series' : 'movies';
+    const panes = {};
+    for (const id of ['movies', 'series']) {
+      panes[id] = document.createElement('div');
+      panes[id].dataset.pane = id;
+      panes[id].hidden = id !== this.cinemaTab;
+      this.screens.movies.appendChild(panes[id]);
+    }
+    const cinema = { tabs: cinemaTabs, onTab: (id) => this.#setCinemaTab(id) };
     this.libraries = {
       youtube: new LibraryScreen({
         ...common,
@@ -101,18 +115,40 @@ class WebBoxOS {
       }),
       movies: new LibraryScreen({
         ...common,
+        ...cinema,
         id: 'movies',
-        root: this.screens.movies,
+        root: panes.movies,
         defaults: MOVIES_DEFAULTS,
         title: 'Películas',
-        subtitle: 'Tu biblioteca. Agrega enlaces de YouTube, archivos del equipo desde Archivos o rutas de video locales.',
+        subtitle:
+          'Tu biblioteca. Agrega el enlace o el código <iframe> de un reproductor web, enlaces de YouTube, archivos del equipo desde Archivos o rutas de video locales.',
+        addLabel: 'Agregar película',
         defaultCategory: 'Mis películas',
         cardStyle: 'poster',
         cardIcon: 'film',
-        accept: ['youtube', 'video'],
+        accept: ['youtube', 'video', 'embed'],
         emptyText:
-          '<b>Aquí irán tus películas.</b><br>Pulsa <b>Agregar</b> para guardar un enlace o abre <b>Archivos</b> ' +
-          'y usa <b>Agregar a Películas</b> sobre cualquier video del equipo.',
+          '<b>Aquí irán tus películas.</b><br>Pulsa <b>Agregar película</b> y pega el enlace (o el código <b>&lt;iframe&gt;</b>) del reproductor, ' +
+          'o abre <b>Archivos</b> y usa <b>Agregar a Películas</b> sobre cualquier video del equipo.',
+      }),
+      series: new LibraryScreen({
+        ...common,
+        ...cinema,
+        id: 'series',
+        root: panes.series,
+        defaults: SERIES_DEFAULTS,
+        title: 'Series',
+        subtitle:
+          'Cada serie es una fila y cada capítulo una casilla. Termina la fila con + para sumar capítulos; al acabar uno pasa al siguiente.',
+        addLabel: 'Agregar serie',
+        rowAddLabel: 'Agregar capítulo',
+        defaultCategory: 'Mis series',
+        cardStyle: 'wide',
+        cardIcon: 'tv',
+        accept: ['youtube', 'video', 'embed'],
+        emptyText:
+          '<b>Aquí irán tus series.</b><br>Pulsa <b>Agregar serie</b>, escribe el nombre y pega el enlace (o el código <b>&lt;iframe&gt;</b>) ' +
+          'de uno o varios capítulos separados por espacio.',
       }),
     };
     this.files = new FilesScreen({
@@ -147,8 +183,8 @@ class WebBoxOS {
       onDelete: (item) => this.#confirmDeleteSong(item),
     });
     this.musicLib.onChange = () => this.music.render();
-    this.games = new GamesScreen({
-      root: this.screens.games,
+    this.emulators = new EmulatorsScreen({
+      root: this.screens.emulators,
       focus: this.focus,
       files: this.files,
       onOpenFiles: () => this.navigate('files', { enter: true }),
@@ -172,7 +208,7 @@ class WebBoxOS {
     for (const lib of Object.values(this.libraries)) lib.render();
     this.files.render();
     this.music.render();
-    this.games.render();
+    this.emulators.render();
     this.settings.render();
     this.#applyDisplay();
     this.#bindEvents();
@@ -258,7 +294,7 @@ class WebBoxOS {
     // Con el reproductor abierto, la primera pulsación solo muestra los controles ocultos.
     if (this.player.handleAction(action)) return;
     // Mientras se juega, el propio emulador recibe las entradas del mando.
-    if (this.games?.isPlaying) return;
+    if (this.emulators?.isPlaying) return;
     if (
       this.current === 'music' && !this.dialog.isOpen && !this.cardMenu.isOpen &&
       !this.player.isOpen && !this.overlayOpen && this.music.handleAction(action)
@@ -291,10 +327,11 @@ class WebBoxOS {
    * Cambia de pantalla. `enter` además mueve el foco al contenido.
    */
   navigate(name, { enter = false } = {}) {
-    if (!this.screens[name] && name !== 'emulators') return;
-    // "Emuladores" abre directamente el emulador de SNES (la pantalla de juegos).
-    const view = name === 'emulators' ? 'games' : name;
-    if (this.current === 'games' && view !== 'games') this.games?.stop({ restore: false });
+    if (!this.screens[name]) return;
+    const view = name;
+    if (this.current === 'emulators' && view !== 'emulators') this.emulators?.reset();
+    // Pulsar OK en "Emuladores" estando dentro de una consola vuelve al selector de consolas.
+    if (enter && view === 'emulators' && this.current === 'emulators') this.emulators.reset();
 
     if (view !== this.current) {
       for (const [key, el] of Object.entries(this.screens)) el.hidden = key !== view;
@@ -310,8 +347,6 @@ class WebBoxOS {
       for (const item of this.sidebar.querySelectorAll('[data-screen]')) {
         item.classList.toggle('is-current', item.dataset.screen === name);
       }
-      const title = this.screens.games.querySelector('.screen-title');
-      if (title) title.textContent = name === 'emulators' ? 'Emuladores · Super Nintendo' : 'Juegos';
     }
     if (enter) this.#enterScreen(view);
   }
@@ -321,10 +356,13 @@ class WebBoxOS {
       this.settings.focusEntry();
     } else if (name === 'files') {
       this.files.focusEntry();
-    } else if (name === 'games') {
-      this.games.focusEntry();
+    } else if (name === 'emulators') {
+      this.emulators.focusEntry();
     } else if (name === 'music') {
       this.music.focusEntry();
+    } else if (name === 'movies') {
+      const lib = this.libraries[this.cinemaTab];
+      if (!this.focus.focusByFid(lib.fid(`tab:${this.cinemaTab}`))) this.focus.focusFirst('[data-zone="main"]');
     } else {
       this.focus.focusFirst('[data-zone="main"]');
     }
@@ -348,7 +386,7 @@ class WebBoxOS {
       return;
     }
     if (this.current === 'files' && await this.files.handleBack()) return;
-    if (this.current === 'games' && await this.games.handleBack()) return;
+    if (this.current === 'emulators' && await this.emulators.handleBack()) return;
     if (this.settings.handleBack()) return;
     if (this.current !== 'home') {
       this.navigate('home', { enter: true });
@@ -367,7 +405,7 @@ class WebBoxOS {
     if (this.dialog.isOpen) this.dialog.close({ restore: false });
     if (this.player.isOpen) this.player.close({ restore: false });
     if (this.files?.viewerOpen) this.files.closeViewer({ restore: false });
-    this.games?.stop({ restore: false });
+    this.emulators?.stop({ restore: false });
     if (this.files?.targetOpen) this.files.closeTargetPicker();
     if (this.overlayOpen) this.closeOverlay({ restore: false });
     if (this.settings.capturing) this.settings.cancelCapture();
@@ -543,51 +581,123 @@ class WebBoxOS {
 
   // ------------------------------------------------------- bibliotecas
 
-  #openAddDialog(lib) {
+  #openAddDialog(lib, { category = '' } = {}) {
     const isMovies = lib.id === 'movies';
+    const isSeries = lib.id === 'series';
     const isMusic = lib.id === 'music';
-    this.dialog.open({
-      title: isMovies ? 'Agregar película' : isMusic ? 'Agregar música' : 'Agregar a YouTube',
-      hint: isMovies
-        ? 'Enlace de YouTube o ruta de un archivo (assets/movies/mi-pelicula.mp4). Pulsa OK en un campo para escribir.'
-        : isMusic
-          ? 'Pega el enlace de YouTube de la canción (o de una lista). Si dejas el título o el artista vacíos se intentan obtener solos.'
-          : 'Pega un enlace de video o lista de YouTube. Si dejas el título vacío se intenta obtener solo.',
-      fields: isMusic
-        ? [
-            { key: 'url', label: 'Enlace de YouTube', placeholder: 'https://www.youtube.com/watch?v=…' },
-            { key: 'title', label: 'Título de la canción (opcional)', placeholder: 'Se completa solo' },
-            { key: 'artist', label: 'Artista (opcional)', placeholder: 'Se completa solo' },
-          ]
-        : [
-            { key: 'url', label: 'Enlace o ruta', placeholder: isMovies ? 'https://… o assets/movies/…mp4' : 'https://www.youtube.com/watch?v=…' },
-            { key: 'title', label: isMovies ? 'Título' : 'Título (opcional)', placeholder: isMovies ? 'Nombre de la película' : 'Se completa solo' },
-            { key: 'category', label: 'Categoría (fila donde aparece)', value: '', placeholder: lib.defaultCategory },
-            ...(isMovies ? [{ key: 'image', label: 'Póster (opcional)', placeholder: 'assets/movies/mi-pelicula.jpg' }] : []),
-          ],
-      onSubmit: (values) => this.#submitItem(lib, values),
-    });
+    const WEB_HINT =
+      'Pega el enlace o el código <iframe> del reproductor (en la web suele estar en Compartir / Insertar / Embed), ' +
+      'un enlace de YouTube o la ruta de un archivo (assets/movies/mi-pelicula.mp4).';
+    let title = 'Agregar a YouTube';
+    let hint = 'Pega un enlace de video o lista de YouTube. Si dejas el título vacío se intenta obtener solo.';
+    let fields = [
+      { key: 'url', label: 'Enlace o ruta', placeholder: 'https://www.youtube.com/watch?v=…' },
+      { key: 'title', label: 'Título (opcional)', placeholder: 'Se completa solo' },
+      { key: 'category', label: 'Categoría (fila donde aparece)', value: '', placeholder: lib.defaultCategory },
+    ];
+    if (isMusic) {
+      title = 'Agregar música';
+      hint = 'Pega el enlace de YouTube de la canción (o de una lista). Si dejas el título o el artista vacíos se intentan obtener solos.';
+      fields = [
+        { key: 'url', label: 'Enlace de YouTube', placeholder: 'https://www.youtube.com/watch?v=…' },
+        { key: 'title', label: 'Título de la canción (opcional)', placeholder: 'Se completa solo' },
+        { key: 'artist', label: 'Artista (opcional)', placeholder: 'Se completa solo' },
+      ];
+    } else if (isMovies) {
+      title = 'Agregar película';
+      hint = `${WEB_HINT} Pulsa OK en un campo para escribir.`;
+      fields = [
+        { key: 'url', label: 'Enlace, código <iframe> o ruta', placeholder: 'https://… o <iframe src="…"> o assets/movies/…mp4' },
+        { key: 'title', label: 'Título', placeholder: 'Nombre de la película' },
+        { key: 'category', label: 'Categoría (fila donde aparece)', value: '', placeholder: lib.defaultCategory },
+        { key: 'image', label: 'Póster (opcional)', placeholder: 'https://… o assets/movies/mi-pelicula.jpg' },
+      ];
+    } else if (isSeries) {
+      title = category ? `Agregar capítulo a ${category}` : 'Agregar serie';
+      hint = `${WEB_HINT} Para varios capítulos de una vez, pega varios enlaces separados por espacio. Pulsa OK en un campo para escribir.`;
+      fields = [
+        { key: 'serie', label: 'Nombre de la serie', value: category, placeholder: 'Ej.: Mi serie' },
+        { key: 'url', label: 'Enlace(s) del capítulo o código <iframe>', placeholder: 'https://… https://… (uno por capítulo)' },
+        { key: 'title', label: 'Título del capítulo (opcional)', placeholder: 'Si lo dejas vacío: Capítulo 1, 2, 3…' },
+        { key: 'image', label: 'Póster de la serie (opcional)', placeholder: 'https://…' },
+      ];
+    }
+    this.dialog.open({ title, hint, fields, onSubmit: (values) => this.#submitItem(lib, values) });
   }
 
   async #submitItem(lib, values) {
-    const media = parseMediaUrl(values.url);
-    if (!media) return 'Enlace no válido. Usa un enlace de YouTube o un archivo .mp4 / .webm.';
+    if (lib.id === 'series') return this.#submitEpisodes(lib, values);
+
+    // En Películas se acepta también código <iframe>: se usa solo la dirección del reproductor.
+    let url = values.url;
+    if (lib.accept.includes('embed')) {
+      const links = splitLinks(values.url);
+      if (links.length > 1) return 'Para una película pega un solo enlace. Para varios capítulos usa Series.';
+      url = links[0] ?? values.url;
+    }
+    const media = lib.parse(url);
+    if (!media) return lib.invalidText;
     const isMusic = lib.id === 'music';
     let title = values.title;
     let artist = values.artist || '';
     if ((!title || (isMusic && !artist)) && media.type === 'youtube' && media.videoId) {
-      const info = await fetchYouTubeInfo(values.url);
+      const info = await fetchYouTubeInfo(url);
       title = title || info.title;
       if (isMusic) artist = artist || info.author.replace(/\s*-\s*Topic$/i, '');
     }
     if (!title) return 'Escribe un título para este elemento.';
 
-    const result = lib.add({ ...values, title, artist });
+    const result = lib.add({ ...values, url, title, artist });
     if (typeof result === 'string') return result;
     toast(`Agregado: ${result.title}`);
     // El foco vuelve a la tarjeta nueva cuando el formulario se cierre.
     this.dialog.returnFid = lib.fid(result.id);
     return null;
+  }
+
+  /** Series: cada serie es una categoría (fila) y cada capítulo, un elemento de esa fila. */
+  #submitEpisodes(lib, values) {
+    const serie = (values.serie || '').trim();
+    if (!serie) return 'Escribe el nombre de la serie.';
+    const links = splitLinks(values.url);
+    if (!links.length) return 'Pega el enlace del capítulo (o el código <iframe> del reproductor).';
+    for (const [i, link] of links.entries()) {
+      if (!lib.parse(link)) {
+        return links.length > 1 ? `El enlace ${i + 1} no es válido: ${link.slice(0, 60)}` : lib.invalidText;
+      }
+    }
+
+    const existing = lib.items().filter((it) => it.category === serie);
+    // Los capítulos nuevos heredan el póster de la serie si no se indica otro.
+    const image = values.image || existing.find((it) => it.image)?.image || '';
+    const created = [];
+    for (const [i, link] of links.entries()) {
+      const number = existing.length + i + 1;
+      let title = `Capítulo ${number}`;
+      if (values.title) title = links.length === 1 ? values.title : `${values.title} ${number}`;
+      const result = lib.add({ title, url: link, category: serie, image });
+      if (typeof result === 'string') return result;
+      created.push(result);
+    }
+    toast(
+      created.length === 1
+        ? `Agregado: ${serie} · ${created[0].title}`
+        : `Agregados ${created.length} capítulos a ${serie}`,
+    );
+    this.dialog.returnFid = lib.fid(created[0].id);
+    return null;
+  }
+
+  /** Cambia entre Películas y Series (pestañas de arriba). */
+  #setCinemaTab(id) {
+    if (!this.libraries[id] || id === this.cinemaTab) return;
+    this.cinemaTab = id;
+    storage.set('cinemaTab', id);
+    for (const [key, lib] of Object.entries({ movies: this.libraries.movies, series: this.libraries.series })) {
+      lib.root.hidden = key !== id;
+    }
+    this.libraries[id].render();
+    this.focus.focusByFid(this.libraries[id].fid(`tab:${id}`));
   }
 
   // ---------------------------------------------------- servidor / base de datos
@@ -655,11 +765,20 @@ class WebBoxOS {
     });
   }
 
-  async #playLibraryItem(item, lib) {
+  /** Capítulos de la misma serie (misma fila), para Anterior / Siguiente y paso automático. */
+  #episodesOf(item, lib) {
+    const list = lib.items().filter((i) => i.category === item.category && !i.fileHandleKey);
+    const index = list.findIndex((i) => i.id === item.id);
+    if (index < 0 || list.length < 2) return undefined;
+    return { list, index, onGo: (next, extra) => this.#playLibraryItem(next, lib, extra) };
+  }
+
+  async #playLibraryItem(item, lib, extra = {}) {
     this.music.pause();
     const onDelete = (it) => this.#deleteItem(lib, it);
     if (!item.fileHandleKey) {
-      this.player.open(item, { onDelete });
+      const episodes = lib.id === 'series' ? this.#episodesOf(item, lib) : undefined;
+      this.player.open(item, { onDelete, episodes, returnFid: extra.returnFid });
       return;
     }
     try {

@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { validateItem } from './validate.js';
 import { DuplicateError } from './store/errors.js';
 
-const order = { youtube: 0, music: 1, movies: 2 };
+const order = { youtube: 0, music: 1, movies: 2, series: 3 };
 
 export async function exportarCatalogo(store, file) {
   const items = (await store.list())

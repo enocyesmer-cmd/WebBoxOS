@@ -185,13 +185,13 @@ export class FilesScreen {
     }
   }
 
-  /** Busca ROMs SNES en todas las subcarpetas de la raíz activa del gestor. */
-  async findSnesRoms({ maxDepth = 12, maxDirectories = 1500, maxFiles = 3000 } = {}) {
+  /** Busca ROMs (por extensión) en todas las subcarpetas de la raíz activa del gestor. */
+  async findRoms(romExtensions, { maxDepth = 12, maxDirectories = 1500, maxFiles = 3000 } = {}) {
     if (!this.rootDirectory) {
       throw new Error('Primero abre una carpeta o el almacenamiento interno desde el Gestor de archivos.');
     }
 
-    const extensions = new Set(['sfc', 'smc', 'fig', 'gd3', 'gd7', 'dx2', 'bsx', 'swc']);
+    const extensions = new Set(romExtensions);
     const roms = [];
     let directoriesVisited = 0;
 

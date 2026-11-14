@@ -30,7 +30,8 @@ const { config, DEFAULT_MAPPING } = await import(`${ROOT}/core/config.js`);
 const { FocusManager } = await import(`${ROOT}/core/focus.js`);
 const { GamepadManager, cleanPadName } = await import(`${ROOT}/input/gamepad.js`);
 const { KeyboardInput } = await import(`${ROOT}/input/keyboard.js`);
-const { isSnesRomName } = await import(`${ROOT}/games.js`);
+const { isSnesRomName } = await import(`${ROOT}/emulators.js`);
+const { CONSOLES, isRomName } = await import(`${ROOT}/data/consoles.js`);
 const { APPS } = await import(`${ROOT}/data/apps.js`);
 
 // ---------- elemento simulado
@@ -327,7 +328,7 @@ await test('repetición del teclado limitada por sensibilidad; OK no se repite',
 });
 
 // ---------- enlaces de video (YouTube / Películas)
-const { parseMediaUrl, parseTimeParam, formatTime, youtubeThumb } = await import(`${ROOT}/core/media.js`);
+const { parseMediaUrl, parseTimeParam, formatTime, youtubeThumb, parsePlayable, parseWebPlayer, splitLinks, extractIframeSources } = await import(`${ROOT}/core/media.js`);
 
 await test('media: enlaces de YouTube (watch, youtu.be, shorts, embed, ID suelto)', () => {
   const id = 'dQw4w9WgXcQ';
@@ -350,6 +351,33 @@ await test('media: archivos de video locales/remotos y enlaces inválidos', () =
   for (const bad of ['', 'hola', 'https://youtube.com/watch?v=corto', 'https://example.com/pagina', 'javascript:alert(1)', 'file:///a.mp4'])
     assert.equal(parseMediaUrl(bad), null, bad);
 });
+await test('media: reproductor web — enlaces y código <iframe> (Películas y Series)', () => {
+  // Cualquier enlace http(s) que no sea YouTube ni video directo se incrusta.
+  assert.deepEqual(parsePlayable('https://reproductor.example.com/embed/abc'), { type: 'embed', src: 'https://reproductor.example.com/embed/abc', host: 'reproductor.example.com' });
+  // Código <iframe> pegado: se toma su src (también //host/ruta y &amp;).
+  const code = '<iframe width="560" src="//player.example.net/e/xyz?a=1&amp;b=2" frameborder="0" allowfullscreen></iframe>';
+  assert.deepEqual(extractIframeSources(code), ['https://player.example.net/e/xyz?a=1&b=2']);
+  assert.equal(parsePlayable(code).src, 'https://player.example.net/e/xyz?a=1&b=2');
+  assert.equal(parsePlayable(code).host, 'player.example.net');
+  // Un iframe de YouTube se reproduce con el reproductor de YouTube, no como web.
+  assert.equal(parsePlayable('<iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ"></iframe>').type, 'youtube');
+  assert.equal(parsePlayable('https://x.com/a.mp4').type, 'video');
+  // Servicios con versión "para incrustar".
+  assert.equal(parseWebPlayer('https://vimeo.com/123456').src, 'https://player.vimeo.com/video/123456');
+  assert.equal(parseWebPlayer('https://www.dailymotion.com/video/x8abc').src, 'https://www.dailymotion.com/embed/video/x8abc');
+  assert.equal(parseWebPlayer('https://drive.google.com/file/d/ID123/view?usp=sharing').src, 'https://drive.google.com/file/d/ID123/preview');
+  assert.equal(parseWebPlayer('https://archive.org/details/mi-pelicula').src, 'https://archive.org/embed/mi-pelicula');
+  // Lo estricto sigue estricto: YouTube y Música no aceptan páginas web.
+  assert.equal(parseMediaUrl('https://example.com/pagina'), null);
+  for (const bad of ['', 'hola', 'javascript:alert(1)', 'file:///a.mp4', 'data:text/html,hi', 'https://user:pw@a.com/x', 'http://localhost/x', 'assets/movies/x'])
+    assert.equal(parsePlayable(bad), null, bad);
+});
+await test('media: pegar varios capítulos (espacios, comas, líneas unidas) o varios <iframe>', () => {
+  assert.deepEqual(splitLinks('https://a.com/1 https://a.com/2,https://a.com/3'), ['https://a.com/1', 'https://a.com/2', 'https://a.com/3']);
+  assert.deepEqual(splitLinks('https://a.com/1https://a.com/2'), ['https://a.com/1', 'https://a.com/2']); // salto de línea perdido al pegar
+  assert.deepEqual(splitLinks('<iframe src="https://a.com/e1"></iframe>\n<iframe src=\'https://a.com/e2\'></iframe>'), ['https://a.com/e1', 'https://a.com/e2']);
+  assert.deepEqual(splitLinks('   '), []);
+});
 await test('media: formato de tiempo', () => {
   assert.equal(formatTime(83), '1:23');
   assert.equal(formatTime(3700), '1:01:40');
@@ -367,8 +395,17 @@ await test('rechaza archivos que no son ROM SNES', () => {
     assert.equal(isSnesRomName(name), false, name);
   }
 });
-await test('Juegos se abre como pantalla real desde el launcher', () => {
-  assert.equal(APPS.find((app) => app.id === 'games')?.screen, 'games');
+await test('Emuladores ofrece SNES, NES, N64, Game Boy y GBA', () => {
+  assert.deepEqual(CONSOLES.map((c) => c.id), ['snes', 'nes', 'n64', 'gb', 'gba']);
+});
+await test('cada consola reconoce solo sus extensiones de ROM', () => {
+  const casos = { snes: 'a.sfc', nes: 'a.NES', n64: 'a.z64', gb: 'a.gbc', gba: 'a.gba' };
+  for (const [id, nombre] of Object.entries(casos)) {
+    for (const otra of CONSOLES) assert.equal(isRomName(nombre, otra.id), otra.id === id, `${nombre} en ${otra.id}`);
+  }
+});
+await test('la casilla de Aplicaciones abre Emuladores', () => {
+  assert.equal(APPS.find((app) => app.id === 'games')?.screen, 'emulators');
 });
 
 console.log(`\n${passed} pruebas correctas`);

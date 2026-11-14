@@ -557,7 +557,7 @@ export class SettingsScreen {
     const rows = [
       ['Servidor', online ? 'Conectado' : 'Sin conexión (modo local)'],
       ['Base de datos', online ? storeName : '—'],
-      ['En el catálogo', online ? `${counts.youtube} videos · ${counts.music} canciones · ${counts.movies} películas` : '—'],
+      ['En el catálogo', online ? `${counts.youtube} videos · ${counts.music} canciones · ${counts.movies} películas · ${counts.series} capítulos de series` : '—'],
       ['Clave de administrador', api.hasKey() ? 'Guardada en este navegador' : 'No guardada (solo lectura)'],
     ];
     return `

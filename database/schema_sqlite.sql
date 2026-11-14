@@ -31,3 +31,14 @@ CREATE TABLE IF NOT EXISTS peliculas (
   artista   TEXT NOT NULL DEFAULT '',
   creado_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Capítulos de series: la columna "categoria" es el nombre de la serie (cada serie es una fila en la web).
+CREATE TABLE IF NOT EXISTS series (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  titulo    TEXT NOT NULL,
+  enlace    TEXT NOT NULL UNIQUE,
+  categoria TEXT NOT NULL DEFAULT '',
+  imagen    TEXT NOT NULL DEFAULT '',
+  artista   TEXT NOT NULL DEFAULT '',
+  creado_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

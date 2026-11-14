@@ -15,8 +15,8 @@ USE webbox;
 -- Solo se guardan DATOS (títulos y enlaces). Nunca archivos de video, audio ni juegos.
 CREATE TABLE IF NOT EXISTS items (
   id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  kind        ENUM('youtube', 'music', 'movies') NOT NULL
-              COMMENT 'youtube = videos y listas, music = canciones, movies = películas',
+  kind        ENUM('youtube', 'music', 'movies', 'series') NOT NULL
+              COMMENT 'youtube = videos y listas, music = canciones, movies = películas, series = capítulos (la categoría es el nombre de la serie)',
   title       VARCHAR(120)  NOT NULL,
   url         VARCHAR(2048) NOT NULL
               COMMENT 'Enlace http(s), ID de YouTube o ruta relativa (assets/movies/x.mp4)',
@@ -37,3 +37,6 @@ CREATE TABLE IF NOT EXISTS items (
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_unicode_ci;
+
+-- Si ya tenías la tabla creada antes de existir las Series, ejecuta una sola vez:
+--   ALTER TABLE items MODIFY kind ENUM('youtube', 'music', 'movies', 'series') NOT NULL;

@@ -1,19 +1,19 @@
 /**
  * Almacén SQLite (archivo database/webbox.sqlite, o la ruta de SQLITE_FILE).
  * Usa el módulo integrado "node:sqlite" (Node.js 22.5 o superior): no instala nada.
- * Tablas en español: videos_youtube, musica, peliculas.
+ * Tablas en español: videos_youtube, musica, peliculas, series.
  *
  * La API identifica cada elemento con un solo número: id_publico = id_fila * 10 + código
- * del tipo (1 youtube, 2 music, 3 movies). Así /api/items/:id sigue funcionando igual.
+ * del tipo (1 youtube, 2 music, 3 movies, 4 series). Así /api/items/:id sigue funcionando igual.
  */
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DuplicateError } from './errors.js';
 
 const SCHEMA = new URL('../../database/schema_sqlite.sql', import.meta.url);
-const TABLES = { youtube: 'videos_youtube', music: 'musica', movies: 'peliculas' };
-const CODES = { youtube: 1, music: 2, movies: 3 };
-const KIND_BY_CODE = { 1: 'youtube', 2: 'music', 3: 'movies' };
+const TABLES = { youtube: 'videos_youtube', music: 'musica', movies: 'peliculas', series: 'series' };
+const CODES = { youtube: 1, music: 2, movies: 3, series: 4 };
+const KIND_BY_CODE = { 1: 'youtube', 2: 'music', 3: 'movies', 4: 'series' };
 const COLS = 'id, titulo, enlace, categoria, imagen, artista';
 
 const toItem = (kind, r) => ({

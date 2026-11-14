@@ -9,7 +9,7 @@ export const APPS = [
   { id: 'music', name: 'Música', icon: 'music', c1: '#7f5af0', c2: '#2cb1ff', screen: 'music' },
   { id: 'photos', name: 'Fotos', icon: 'photo', c1: '#11998e', c2: '#7ee08f', screen: 'files', location: 'photos' },
   { id: 'browser', name: 'Navegador', icon: 'globe', c1: '#2563eb', c2: '#22d3ee' },
-  { id: 'games', name: 'Juegos', icon: 'gamepad', c1: '#e11d74', c2: '#9333ea', screen: 'games' },
+  { id: 'games', name: 'Emuladores', icon: 'gamepad', c1: '#e11d74', c2: '#9333ea', screen: 'emulators' },
   { id: 'tv', name: 'TV en vivo', icon: 'tv', c1: '#f59e0b', c2: '#ef4444' },
   { id: 'files', name: 'Archivos', icon: 'folder', c1: '#475569', c2: '#94a3b8', screen: 'files' },
   { id: 'news', name: 'Noticias', icon: 'book', c1: '#0ea5e9', c2: '#6366f1' },

@@ -2,7 +2,7 @@
  * Validación de los elementos del catálogo (función pura, fácil de probar).
  * El servidor NO confía en el navegador: vuelve a comprobar todo.
  */
-export const KINDS = ['youtube', 'music', 'movies'];
+export const KINDS = ['youtube', 'music', 'movies', 'series'];
 
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const YOUTUBE_ID = /^[\w-]{11}$/;
@@ -70,11 +70,11 @@ export function validateItem(body) {
   const urlOk =
     isHttpUrl(url) ||
     YOUTUBE_ID.test(url) ||
-    (out.kind === 'movies' && isRelativePath(url) && VIDEO_EXT.test(url.split(/[?#]/)[0]));
+    ((out.kind === 'movies' || out.kind === 'series') && isRelativePath(url) && VIDEO_EXT.test(url.split(/[?#]/)[0]));
   if (!urlOk) {
     return {
       ok: false,
-      error: 'El enlace debe ser http(s), un ID de YouTube o (en películas) una ruta relativa a un video.',
+      error: 'El enlace debe ser http(s), un ID de YouTube o (en películas y series) una ruta relativa a un video.',
     };
   }
   if (image && !isHttpUrl(image) && !isRelativePath(image)) {

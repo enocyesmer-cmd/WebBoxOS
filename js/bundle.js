@@ -826,7 +826,7 @@ const APPS = [
   { id: 'music', name: 'Música', icon: 'music', c1: '#7f5af0', c2: '#2cb1ff', screen: 'music' },
   { id: 'photos', name: 'Fotos', icon: 'photo', c1: '#11998e', c2: '#7ee08f', screen: 'files', location: 'photos' },
   { id: 'browser', name: 'Navegador', icon: 'globe', c1: '#2563eb', c2: '#22d3ee' },
-  { id: 'games', name: 'Juegos', icon: 'gamepad', c1: '#e11d74', c2: '#9333ea', screen: 'games' },
+  { id: 'games', name: 'Emuladores', icon: 'gamepad', c1: '#e11d74', c2: '#9333ea', screen: 'emulators' },
   { id: 'tv', name: 'TV en vivo', icon: 'tv', c1: '#f59e0b', c2: '#ef4444' },
   { id: 'files', name: 'Archivos', icon: 'folder', c1: '#475569', c2: '#94a3b8', screen: 'files' },
   { id: 'news', name: 'Noticias', icon: 'book', c1: '#0ea5e9', c2: '#6366f1' },
@@ -1479,7 +1479,7 @@ class ApiClient {
 
   /** Cantidad de elementos por tipo (según la última descarga). */
   counts() {
-    const out = { youtube: 0, music: 0, movies: 0 };
+    const out = { youtube: 0, music: 0, movies: 0, series: 0 };
     for (const item of this.items) {
       if (item.kind in out) out[item.kind] += 1;
     }
@@ -2071,7 +2071,7 @@ class SettingsScreen {
     const rows = [
       ['Servidor', online ? 'Conectado' : 'Sin conexión (modo local)'],
       ['Base de datos', online ? storeName : '—'],
-      ['En el catálogo', online ? `${counts.youtube} videos · ${counts.music} canciones · ${counts.movies} películas` : '—'],
+      ['En el catálogo', online ? `${counts.youtube} videos · ${counts.music} canciones · ${counts.movies} películas · ${counts.series} capítulos de series` : '—'],
       ['Clave de administrador', api.hasKey() ? 'Guardada en este navegador' : 'No guardada (solo lectura)'],
     ];
     return `
@@ -2317,6 +2317,80 @@ function parseMediaUrl(input) {
   return { type: 'video', src };
 }
 
+/**
+ * Direcciones (src) de código <iframe ...> pegado tal cual desde un sitio web
+ * (botón "Compartir", "Insertar" o "Embed" del reproductor). Acepta //host/ruta.
+ */
+function extractIframeSources(text) {
+  const out = [];
+  const re = /<iframe\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
+  for (const m of String(text ?? '').matchAll(re)) {
+    let src = (m[1] ?? m[2] ?? m[3] ?? '').trim().replace(/&amp;/g, '&');
+    if (src.startsWith('//')) src = `https:${src}`;
+    if (src) out.push(src);
+  }
+  return out;
+}
+
+/**
+ * Separa lo pegado en enlaces: código <iframe> (uno o varios) o direcciones
+ * separadas por espacios, comas, punto y coma o saltos de línea. Si el navegador
+ * pegó varias líneas pegadas sin separador, también corta antes de cada http(s)://.
+ */
+function splitLinks(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return [];
+  if (/<iframe/i.test(raw)) return extractIframeSources(raw);
+  return raw
+    .split(/[\s,;]+/)
+    .flatMap((token) => token.split(/(?=https?:\/\/)/i))
+    .filter(Boolean);
+}
+
+/**
+ * Reproductor web para incrustar (iframe): cualquier enlace http(s) que no sea
+ * YouTube ni un archivo de video directo. Solo mira el texto del enlace; no
+ * descarga ni analiza la página. Convierte a su versión "para incrustar" los
+ * servicios que la tienen (Vimeo, Dailymotion, Google Drive, Archive.org).
+ * @returns {{type:'embed',src:string,host:string}|null}
+ */
+function parseWebPlayer(input) {
+  const raw = extractIframeSources(input)[0] ?? String(input ?? '').trim();
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (!/^https?:$/.test(url.protocol) || url.username || url.password) return null;
+  const host = url.hostname.toLowerCase().replace(/^www\./, '');
+  if (!host.includes('.')) return null;
+
+  const parts = url.pathname.split('/').filter(Boolean);
+  let src = url.href;
+  if (host === 'vimeo.com' && /^\d+$/.test(parts[0] ?? '')) {
+    src = `https://player.vimeo.com/video/${parts[0]}`;
+  } else if (host === 'dailymotion.com' && parts[0] === 'video' && parts[1]) {
+    src = `https://www.dailymotion.com/embed/video/${parts[1]}`;
+  } else if (host === 'dai.ly' && parts[0]) {
+    src = `https://www.dailymotion.com/embed/video/${parts[0]}`;
+  } else if (host === 'drive.google.com' && parts[0] === 'file' && parts[1] === 'd' && parts[2]) {
+    src = `https://drive.google.com/file/d/${parts[2]}/preview`;
+  } else if (host === 'archive.org' && parts[0] === 'details' && parts[1]) {
+    src = `https://archive.org/embed/${parts[1]}`;
+  }
+  return { type: 'embed', src, host };
+}
+
+/**
+ * Lo que acepta Películas y Series: YouTube, archivo de video o reproductor web.
+ * (parseMediaUrl sigue siendo estricto para YouTube y Música.)
+ */
+function parsePlayable(input) {
+  const first = extractIframeSources(input)[0] ?? input;
+  return parseMediaUrl(first) ?? parseWebPlayer(first);
+}
+
 /** Miniatura automática de YouTube (null si solo hay lista). */
 function youtubeThumb(media) {
   return media?.type === 'youtube' && media.videoId
@@ -2332,7 +2406,7 @@ function formatTime(total) {
   const sec = String(s % 60).padStart(2, '0');
   return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
 }
-    Object.assign(exports, { parseTimeParam, parseMediaUrl, youtubeThumb, formatTime });
+    Object.assign(exports, { parseTimeParam, parseMediaUrl, extractIframeSources, splitLinks, parseWebPlayer, parsePlayable, youtubeThumb, formatTime });
   };
   __modules["js/library.js"] = function (module, exports, __require) {
 /**
@@ -2342,7 +2416,7 @@ function formatTime(total) {
  * js/data/library.js se mezcla con ello (y se puede ocultar con "Eliminar").
  */
 const { storage } = __require("js/core/storage.js");
-const { parseMediaUrl, youtubeThumb } = __require("js/core/media.js");
+const { parseMediaUrl, parsePlayable, extractIframeSources, youtubeThumb } = __require("js/core/media.js");
 const { icon } = __require("js/icons.js");
 const { api } = __require("js/api.js");
 const { esc, toast } = __require("js/ui.js");
@@ -2375,8 +2449,14 @@ class LibraryScreen {
    * @param {{id:string, root:HTMLElement, defaults:object[], title:string, subtitle:string,
    *   defaultCategory:string, cardStyle:'wide'|'poster', accept:string[], emptyText:string,
    *   cardIcon:string, extraButtons?:{act:string,label:string,icon:string}[],
-   *   onPlay:(item:object, lib:LibraryScreen)=>void, onAdd:(lib:LibraryScreen)=>void,
+   *   addLabel?:string, rowAddLabel?:string, tabs?:{id:string,label:string,icon:string}[],
+   *   onTab?:(id:string)=>void,
+   *   onPlay:(item:object, lib:LibraryScreen)=>void,
+   *   onAdd:(lib:LibraryScreen, opts?:{category?:string})=>void,
    *   onExtra?:(act:string)=>void}} opts
+   * Con `tabs`, la pantalla muestra arriba las pestañas (p. ej. Películas | Series).
+   * Con `rowAddLabel`, cada fila termina en una casilla "+" que agrega a esa fila
+   * (en Series: otro capítulo de la misma serie).
    */
   constructor(opts) {
     Object.assign(this, opts);
@@ -2387,6 +2467,8 @@ class LibraryScreen {
     this.root.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]');
       if (act?.dataset.act === 'lib-add') return this.onAdd(this);
+      if (act?.dataset.act === 'lib-add-in') return this.onAdd(this, { category: act.dataset.cat });
+      if (act?.dataset.act === 'lib-tab') return this.onTab?.(act.dataset.tab);
       if (act?.dataset.act === 'lib-ext') return this.onExtra?.(act.dataset.extra);
       const card = e.target.closest('[data-kind="lib"]');
       const item = card && this.items().find((i) => i.id === card.dataset.id);
@@ -2427,10 +2509,24 @@ class LibraryScreen {
     }));
   }
 
+  /** Interpreta un enlace según lo que acepta esta biblioteca (null si no vale). */
+  parse(url) {
+    return (this.accept.includes('embed') ? parsePlayable : parseMediaUrl)(url);
+  }
+
+  /** Texto de error cuando un enlace no sirve en esta biblioteca. */
+  get invalidText() {
+    return this.accept.includes('embed')
+      ? 'Enlace no válido. Usa el enlace o el código <iframe> del reproductor, un enlace de YouTube o un archivo .mp4 / .webm.'
+      : 'Enlace no válido. Usa un enlace de YouTube o un archivo .mp4 / .webm.';
+  }
+
   /** Devuelve el elemento creado, o un string con el error. */
   add({ title, url, category, image, artist }) {
-    const media = parseMediaUrl(url);
-    if (!media) return 'Enlace no válido. Usa un enlace de YouTube o un archivo .mp4 / .webm.';
+    // Si pegaron código <iframe>, se guarda solo la dirección del reproductor.
+    const typed = extractIframeSources(url)[0] ?? String(url).trim();
+    const media = this.parse(typed);
+    if (!media) return this.invalidText;
     if (!this.accept.includes(media.type)) {
       return this.accept.includes('video')
         ? 'Este enlace no es de video.'
@@ -2439,7 +2535,7 @@ class LibraryScreen {
     const item = {
       id: `u:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
       title: String(title).trim().slice(0, 120),
-      url: String(url).trim(),
+      url: media.type === 'embed' ? media.src : typed,
       category: String(category || '').trim().slice(0, 40),
       image: String(image || '').trim(),
       artist: String(artist || '').trim().slice(0, 80),
@@ -2612,7 +2708,7 @@ class LibraryScreen {
   render() {
     const items = this.items();
     const buttons = [
-      { act: 'lib-add', label: 'Agregar', icon: 'plus' },
+      { act: 'lib-add', label: this.addLabel ?? 'Agregar', icon: 'plus' },
       ...(this.extraButtons ?? []).map((b) => ({ ...b, act: 'lib-ext' })),
     ];
     const actions = buttons
@@ -2625,9 +2721,21 @@ class LibraryScreen {
       )
       .join('');
 
+    const tabs = this.tabs
+      ? `<div class="lib-tabs" role="tablist">${this.tabs
+          .map(
+            (t) => `
+        <div class="tab${t.id === this.id ? ' is-active' : ''}" role="tab" aria-selected="${t.id === this.id}"
+             tabindex="-1" data-focusable data-zone="main" data-fid="lib:${this.id}:tab:${t.id}"
+             data-act="lib-tab" data-tab="${t.id}">${icon(t.icon)}${esc(t.label)}</div>`,
+          )
+          .join('')}</div>`
+      : '';
+
     const rows = this.categories()
       .map((cat) => {
-        const cards = items.filter((i) => i.category === cat).map((i) => this.#card(i)).join('');
+        const cards = items.filter((i) => i.category === cat).map((i) => this.#card(i)).join('')
+          + (this.rowAddLabel ? this.#addCard(cat) : '');
         return `
           <section class="row" data-row="${esc(cat)}">
             <h2 class="row-title"><span class="row-icon">${icon(this.cardIcon)}</span>${esc(cat)}</h2>
@@ -2639,17 +2747,31 @@ class LibraryScreen {
     this.root.innerHTML = `
       <h1 class="screen-title">${esc(this.title)}</h1>
       <p class="lib-sub">${esc(this.subtitle)}</p>
-      <div class="lib-actions">${actions}</div>
+      <div class="lib-actions${this.tabs ? ' lib-actions--tabs' : ''}">${tabs}<div class="lib-actions-end">${actions}</div></div>
       ${items.length ? rows : `<div class="lib-empty">${this.emptyText}</div>`}
     `;
     this.onChange?.();
   }
 
+  /** Casilla "+" al final de una fila: agrega otro elemento a esa misma fila. */
+  #addCard(cat) {
+    return `
+      <div class="card card--wide card--add" role="button" tabindex="-1" data-focusable data-zone="main"
+           data-fid="lib:${this.id}:addin:${hash(cat).toString(36)}" data-act="lib-add-in" data-cat="${esc(cat)}"
+           aria-label="${esc(this.rowAddLabel)}">
+        <span class="card-art">${icon('plus')}</span>
+        <span class="card-label">${esc(this.rowAddLabel)}</span>
+      </div>`;
+  }
+
   #card(item) {
-    const media = parseMediaUrl(item.url);
+    const media = parsePlayable(item.url);
     const img = item.image || youtubeThumb(media);
     const [c1, c2] = PALETTE[hash(item.title) % PALETTE.length];
-    const kind = item.fileHandleKey ? 'Archivo local' : (media?.type === 'youtube' ? (media.videoId ? 'YouTube' : 'Lista de YouTube') : 'Archivo de video');
+    let kind = 'Archivo de video';
+    if (item.fileHandleKey) kind = 'Archivo local';
+    else if (media?.type === 'youtube') kind = media.videoId ? 'YouTube' : 'Lista de YouTube';
+    else if (media?.type === 'embed') kind = `Reproductor web · ${media.host}`;
     const poster = this.cardStyle === 'poster';
     return `
       <div class="card ${poster ? 'card--poster' : 'card--wide'}${img ? ' card--media' : ''}"
@@ -2673,7 +2795,7 @@ class LibraryScreen {
  * El iframe de YouTube no recibe clics ni teclas (pointer-events:none y disablekb):
  * así el foco nunca se queda "atrapado" dentro y Atrás/Inicio siempre funcionan.
  */
-const { parseMediaUrl, formatTime } = __require("js/core/media.js");
+const { parsePlayable, formatTime } = __require("js/core/media.js");
 const { icon } = __require("js/icons.js");
 const { esc, toast } = __require("js/ui.js");
 
@@ -2797,6 +2919,66 @@ class VideoAdapter {
   destroy() { this.v?.pause(); this.v?.removeAttribute('src'); this.v?.load(); }
 }
 
+/**
+ * Reproductor web incrustado (iframe de cualquier sitio: el que pega el usuario).
+ * No se puede controlar desde fuera (es de otro dominio): se inicia con un clic
+ * dentro del propio reproductor. Por defecto va en un "sandbox" que bloquea
+ * ventanas emergentes y redirecciones de la página; el modo compatible lo quita
+ * para los reproductores que no funcionan dentro de un sandbox.
+ */
+const EMBED_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-presentation';
+
+class EmbedAdapter {
+  constructor(host, media, { onState, onError }) {
+    this.host = host;
+    this.media = media;
+    this.onState = onState;
+    this.onError = onError;
+    this.f = null;
+    this.safe = true;
+  }
+
+  #frame() {
+    const f = document.createElement('iframe');
+    f.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
+    f.allowFullscreen = true;
+    f.referrerPolicy = 'strict-origin-when-cross-origin';
+    f.title = 'Reproductor web';
+    if (this.safe) f.setAttribute('sandbox', EMBED_SANDBOX);
+    f.src = this.media.src;
+    return f;
+  }
+
+  async init() {
+    this.f = this.#frame();
+    this.host.replaceWith(this.f);
+  }
+
+  /** Recarga el reproductor con o sin sandbox. Devuelve true si quedó en modo compatible. */
+  toggleCompat() {
+    this.safe = !this.safe;
+    const next = this.#frame();
+    this.f.replaceWith(next);
+    this.f = next;
+    return !this.safe;
+  }
+
+  get isList() { return false; }
+  isPlaying() { return false; }
+  toggle() {}
+  seek() {}
+  time() { return [0, 0]; }
+  isMuted() { return false; }
+  toggleMute() {}
+  next() {}
+  prev() {}
+  destroy() {
+    if (!this.f) return;
+    this.f.src = 'about:blank';
+    this.f.remove();
+  }
+}
+
 class AudioAdapter {
   constructor(host, media, { onState, onError }) {
     this.host = host;
@@ -2849,6 +3031,8 @@ class Player {
     this.returnFid = null;
     this.item = null;
     this.onDelete = null;
+    this.episodes = null;
+    this.media = null;
     this.confirmDelete = false;
     this.poll = 0;
     this.idleTimer = 0;
@@ -2857,13 +3041,19 @@ class Player {
     el.addEventListener('mousemove', () => this.#show());
   }
 
-  async open(item, { onDelete } = {}) {
-    const media = parseMediaUrl(item.url);
+  /**
+   * @param {object} item
+   * @param {{onDelete?:Function, returnFid?:string,
+   *   episodes?:{list:object[], index:number, onGo:(item:object, extra:{returnFid:string})=>void}}} opts
+   *   `episodes` activa Anterior / Siguiente capítulo y el paso automático al terminar.
+   */
+  async open(item, { onDelete, episodes, returnFid } = {}) {
+    const media = parsePlayable(item.url);
     if (!media) {
       toast('Ese enlace no es válido. Elimínalo y vuelve a agregarlo.');
       return;
     }
-    return this.#open(item, media, { onDelete });
+    return this.#open(item, media, { onDelete, episodes, returnFid });
   }
 
   /** Abre un archivo local seleccionado desde Archivos o guardado en Películas. */
@@ -2877,16 +3067,20 @@ class Player {
     );
   }
 
-  async #open(item, media, { onDelete, objectUrl } = {}) {
+  async #open(item, media, { onDelete, objectUrl, episodes, returnFid } = {}) {
     if (this.isOpen) {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       return;
     }
     this.item = item;
     this.onDelete = onDelete ?? null;
+    this.episodes = episodes && episodes.list.length > 1 ? episodes : null;
+    this.media = media;
     this.objectUrl = objectUrl ?? null;
     this.confirmDelete = false;
-    this.returnFid = this.focus.current?.dataset.fid ?? null;
+    this.returnFid = returnFid ?? this.focus.current?.dataset.fid ?? null;
+    const embed = media.type === 'embed';
+    const title = this.episodes && item.category ? `${item.category} · ${item.title}` : item.title;
     this.isOpen = true;
     document.body.classList.add('player-open');
 
@@ -2894,7 +3088,7 @@ class Player {
       <div class="player-stage" data-stage><div data-host></div></div>
       ${media.type === 'audio' ? `<div class="player-audio-label">${icon('music')}<span>Reproduciendo audio</span></div>` : ''}
       <div class="player-msg" data-msg>Cargando…</div>
-      <div class="player-top"><span class="player-title">${esc(item.title)}</span></div>
+      <div class="player-top"><span class="player-title">${esc(title)}</span></div>
       <div class="player-controls">
         <div class="player-bar">
           <span data-cur>0:00</span>
@@ -2902,25 +3096,34 @@ class Player {
           <span data-dur>0:00</span>
         </div>
         <div class="player-buttons">
-          ${this.#btn('toggle', 'playsolid', 'Reproducir')}
-          ${this.#btn('back', 'back10', '10 s')}
-          ${this.#btn('fwd', 'fwd10', '10 s')}
-          ${media.listId ? this.#btn('prev', 'prev', 'Anterior') + this.#btn('next', 'next', 'Siguiente') : ''}
-          ${this.#btn('mute', 'volume', 'Sonido')}
+          ${embed ? '' : this.#btn('toggle', 'playsolid', 'Reproducir')}
+          ${embed ? '' : this.#btn('back', 'back10', '10 s')}
+          ${embed ? '' : this.#btn('fwd', 'fwd10', '10 s')}
+          ${media.listId || this.episodes
+            ? this.#btn('prev', 'prev', this.episodes ? 'Cap. anterior' : 'Anterior') +
+              this.#btn('next', 'next', this.episodes ? 'Cap. siguiente' : 'Siguiente')
+            : ''}
+          ${embed ? '' : this.#btn('mute', 'volume', 'Sonido')}
           ${media.type !== 'audio' ? this.#btn('full', 'fullscreen', 'Pantalla completa') : ''}
+          ${embed ? this.#btn('compat', 'reset', 'Modo compatible') + this.#btn('tab', 'external', 'Abrir en pestaña') : ''}
           ${onDelete ? this.#btn('del', 'trash', 'Eliminar') : ''}
           ${this.#btn('close', 'close', 'Cerrar')}
         </div>
       </div>`;
     this.el.classList.toggle('is-audio', media.type === 'audio');
+    this.el.classList.toggle('is-embed', embed);
+    document.body.classList.toggle('player-embed', embed);
     this.el.classList.remove('is-idle');
     this.el.hidden = false;
     this.focus.clear();
     this.focus.pushScope(this.el);
-    this.focus.focusByFid('pl:toggle');
+    if (embed) this.focus.focusFirst('[data-focusable]');
+    else this.focus.focusByFid('pl:toggle');
     this.#show();
+    if (embed) toast('Haz clic dentro del reproductor para iniciar. Con mando: B para salir.', 6000);
 
-    const Adapter = media.type === 'youtube' ? YouTubeAdapter : media.type === 'audio' ? AudioAdapter : VideoAdapter;
+    const ADAPTERS = { youtube: YouTubeAdapter, audio: AudioAdapter, embed: EmbedAdapter };
+    const Adapter = ADAPTERS[media.type] ?? VideoAdapter;
     const adapter = new Adapter(this.el.querySelector('[data-host]'), media, {
       onState: (state) => this.#onState(state),
       onError: (message) => this.#fail(message),
@@ -2950,9 +3153,11 @@ class Player {
     this.adapter = null;
     if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
     this.objectUrl = null;
+    this.episodes = null;
+    this.media = null;
     this.isOpen = false;
-    document.body.classList.remove('player-open');
-    this.el.classList.remove('is-audio');
+    document.body.classList.remove('player-open', 'player-embed');
+    this.el.classList.remove('is-audio', 'is-embed');
     this.el.hidden = true;
     this.el.innerHTML = '';
     this.focus.popScope();
@@ -3000,6 +3205,23 @@ class Player {
     const playing = state === 1 || state === 3;
     this.#setBtn('toggle', playing ? 'pause' : 'playsolid', playing ? 'Pausa' : 'Reproducir');
     if (!playing) this.#show();
+    // Al terminar un capítulo (que no sea una lista de YouTube) pasa al siguiente.
+    const eps = this.episodes;
+    if (state === 0 && eps && !this.media?.listId && eps.list[eps.index + 1]) this.#goEpisode(1);
+  }
+
+  /** Cierra este capítulo y abre el anterior (-1) o el siguiente (+1) de la serie. */
+  #goEpisode(delta) {
+    const eps = this.episodes;
+    if (!eps) return;
+    const target = eps.list[eps.index + delta];
+    if (!target) {
+      toast(delta > 0 ? 'Es el último capítulo.' : 'Es el primer capítulo.');
+      return;
+    }
+    const returnFid = this.returnFid;
+    this.close({ restore: false });
+    eps.onGo(target, { returnFid });
   }
 
   #fail(message) {
@@ -3032,8 +3254,22 @@ class Player {
       case 'pl-toggle': return a?.toggle();
       case 'pl-back': return a?.seek(-10);
       case 'pl-fwd': return a?.seek(10);
-      case 'pl-prev': return a?.prev();
-      case 'pl-next': return a?.next();
+      case 'pl-prev': return this.episodes ? this.#goEpisode(-1) : a?.prev();
+      case 'pl-next': return this.episodes ? this.#goEpisode(1) : a?.next();
+      case 'pl-tab':
+        if (this.media?.src) window.open(this.media.src, '_blank', 'noopener');
+        return undefined;
+      case 'pl-compat': {
+        const compat = a?.toggleCompat?.();
+        this.#setBtn('compat', 'reset', compat ? 'Modo seguro' : 'Modo compatible');
+        toast(
+          compat
+            ? 'Modo compatible: el reproductor se recargó sin restricciones. Úsalo solo si confías en ese sitio.'
+            : 'Modo seguro: se bloquean ventanas emergentes y redirecciones.',
+          4500,
+        );
+        return undefined;
+      }
       case 'pl-mute': return a?.toggleMute();
       case 'pl-full': return this.#toggleFullscreen();
       case 'pl-close': return this.close();
@@ -3737,13 +3973,13 @@ class FilesScreen {
     }
   }
 
-  /** Busca ROMs SNES en todas las subcarpetas de la raíz activa del gestor. */
-  async findSnesRoms({ maxDepth = 12, maxDirectories = 1500, maxFiles = 3000 } = {}) {
+  /** Busca ROMs (por extensión) en todas las subcarpetas de la raíz activa del gestor. */
+  async findRoms(romExtensions, { maxDepth = 12, maxDirectories = 1500, maxFiles = 3000 } = {}) {
     if (!this.rootDirectory) {
       throw new Error('Primero abre una carpeta o el almacenamiento interno desde el Gestor de archivos.');
     }
 
-    const extensions = new Set(['sfc', 'smc', 'fig', 'gd3', 'gd7', 'dx2', 'bsx', 'swc']);
+    const extensions = new Set(romExtensions);
     const roms = [];
     let directoriesVisited = 0;
 
@@ -4289,12 +4525,99 @@ class FilesScreen {
 }
     Object.assign(exports, { FilesScreen });
   };
-  __modules["js/games.js"] = function (module, exports, __require) {
+  __modules["js/data/consoles.js"] = function (module, exports, __require) {
 /**
- * Juegos: biblioteca SNES integrada con el Gestor de archivos.
- * EmulatorJS ejecuta el núcleo Snes9x dentro de un iframe aislado del launcher.
+ * Consolas disponibles en la pantalla Emuladores.
+ * `core` es el identificador de sistema de EmulatorJS (se descarga desde su CDN).
+ */
+
+const CONSOLES = [
+  {
+    id: 'snes',
+    name: 'Super Nintendo',
+    short: 'SNES',
+    maker: 'Nintendo · 1990',
+    core: 'snes',
+    engine: 'Snes9x',
+    extensions: ['sfc', 'smc', 'fig', 'gd3', 'gd7', 'dx2', 'bsx', 'swc'],
+    c1: '#6d28d9',
+    c2: '#a78bfa',
+    note: '',
+  },
+  {
+    id: 'nes',
+    name: 'Nintendo (NES)',
+    short: 'NES',
+    maker: 'Nintendo · 1983',
+    core: 'nes',
+    engine: 'FCEUmm',
+    extensions: ['nes', 'unf', 'unif'],
+    c1: '#b91c1c',
+    c2: '#f87171',
+    note: '',
+  },
+  {
+    id: 'n64',
+    name: 'Nintendo 64',
+    short: 'N64',
+    maker: 'Nintendo · 1996',
+    core: 'n64',
+    engine: 'Mupen64Plus-Next',
+    extensions: ['z64', 'n64', 'v64'],
+    c1: '#047857',
+    c2: '#34d399',
+    note: 'Nintendo 64 exige más rendimiento: funciona mejor en un equipo potente.',
+  },
+  {
+    id: 'gb',
+    name: 'Game Boy / Color',
+    short: 'GB',
+    maker: 'Nintendo · 1989',
+    core: 'gb',
+    engine: 'Gambatte',
+    extensions: ['gb', 'gbc', 'sgb'],
+    c1: '#4d7c0f',
+    c2: '#bef264',
+    note: 'Incluye juegos de Game Boy y Game Boy Color.',
+  },
+  {
+    id: 'gba',
+    name: 'Game Boy Advance',
+    short: 'GBA',
+    maker: 'Nintendo · 2001',
+    core: 'gba',
+    engine: 'mGBA',
+    extensions: ['gba'],
+    c1: '#4338ca',
+    c2: '#818cf8',
+    note: '',
+  },
+];
+
+function getConsole(id) {
+  return CONSOLES.find((item) => item.id === id) ?? null;
+}
+
+function fileExtension(name) {
+  const match = String(name ?? '').toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match ? match[1] : '';
+}
+
+/** ¿El nombre de archivo corresponde a una ROM de esta consola? */
+function isRomName(name, consoleId) {
+  const info = getConsole(consoleId);
+  return Boolean(info && info.extensions.includes(fileExtension(name)));
+}
+    Object.assign(exports, { CONSOLES, getConsole, fileExtension, isRomName });
+  };
+  __modules["js/emulators.js"] = function (module, exports, __require) {
+/**
+ * Emuladores: selector de consolas (SNES, NES, N64, Game Boy, Game Boy Advance)
+ * y biblioteca de ROMs integrada con el Gestor de archivos.
+ * EmulatorJS ejecuta cada núcleo dentro de un iframe aislado del launcher.
  */
 const { bus } = __require("js/core/events.js");
+const { CONSOLES, getConsole, isRomName } = __require("js/data/consoles.js");
 const { icon } = __require("js/icons.js");
 const { esc, toast } = __require("js/ui.js");
 
@@ -4302,11 +4625,9 @@ const EMULATOR_DATA = 'https://cdn.emulatorjs.org/stable/data/';
 const GUIDE_BUTTON = 16;
 const EXIT_HOLD_MS = 1500;
 
-const ROM_EXTENSIONS = new Set(['sfc', 'smc', 'fig', 'gd3', 'gd7', 'dx2', 'bsx', 'swc']);
-
+/** Compatibilidad con las pruebas existentes. */
 function isSnesRomName(name) {
-  const match = String(name ?? '').toLowerCase().match(/\.([a-z0-9]+)$/);
-  return Boolean(match && ROM_EXTENSIONS.has(match[1]));
+  return isRomName(name, 'snes');
 }
 
 function readableSize(bytes) {
@@ -4316,14 +4637,20 @@ function readableSize(bytes) {
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 }
 
-class GamesScreen {
+function formatList(extensions) {
+  return extensions.map((ext) => `.${ext}`).join(', ');
+}
+
+class EmulatorsScreen {
   constructor({ root, focus, files, onOpenFiles }) {
     this.root = root;
     this.focus = focus;
     this.files = files;
     this.onOpenFiles = onOpenFiles;
-    this.roms = [];
-    this.hasScanned = false;
+    /** Consola abierta (null = catálogo de consolas). */
+    this.console = null;
+    /** Resultado de búsqueda por consola: { roms, hasScanned, location }. */
+    this.library = new Map();
     this.scanning = false;
     this.isPlaying = false;
     this.currentRom = null;
@@ -4334,7 +4661,7 @@ class GamesScreen {
     this.root.addEventListener('click', (event) => this.#onClick(event));
     window.addEventListener('message', (event) => {
       if (event.source !== this.iframe?.contentWindow) return;
-      if (event.data?.source === 'webbox-snes' && event.data?.action === 'exit') this.stop();
+      if (event.data?.source === 'webbox-emulator' && event.data?.action === 'exit') this.stop();
     });
     bus.on('gamepad:button', ({ button, pressed }) => {
       if (!this.isPlaying || button !== GUIDE_BUTTON) return;
@@ -4352,114 +4679,127 @@ class GamesScreen {
     });
   }
 
+  // ------------------------------------------------------------ render
+
   render() {
+    if (this.console) this.#renderConsole();
+    else this.#renderCatalog();
+  }
+
+  #renderCatalog() {
     this.root.innerHTML = `
-      <h1 class="screen-title">Juegos</h1>
-      <p class="games-sub">Juega títulos de Super Nintendo con tus ROMs guardadas en el Gestor de archivos.</p>
-      <section class="games-console-card">
-        <div class="games-console-art">${icon('gamepad')}</div>
+      <h1 class="screen-title">Emuladores</h1>
+      <p class="emu-sub">Elige una consola y juega con las ROMs que tengas guardadas en el Gestor de archivos.</p>
+      <section class="emu-grid" aria-label="Consolas">
+        ${CONSOLES.map((item) => `
+          <div class="emu-card" role="button" tabindex="-1" data-focusable data-zone="main"
+               data-fid="emu:console:${item.id}" data-act="emu-open" data-console="${item.id}"
+               style="--c1:${item.c1};--c2:${item.c2}">
+            <div class="emu-card-art">
+              <span class="emu-card-short">${esc(item.short)}</span>
+              ${icon('gamepad')}
+            </div>
+            <div class="emu-card-info">
+              <strong>${esc(item.name)}</strong>
+              <span>${esc(item.maker)}</span>
+              <small>${esc(this.#summary(item.id))}</small>
+            </div>
+          </div>`).join('')}
+      </section>
+      <p class="emu-help">Los emuladores funcionan con EmulatorJS y necesitan conexión a Internet para descargar el núcleo de cada consola. WebBox OS no incluye juegos: usa copias que tengas derecho a usar.</p>`;
+  }
+
+  #summary(id) {
+    const entry = this.library.get(id);
+    if (!entry?.hasScanned) return 'Abrir biblioteca';
+    const n = entry.roms.length;
+    return `${n} juego${n === 1 ? '' : 's'}`;
+  }
+
+  #renderConsole() {
+    const info = this.console;
+    this.root.innerHTML = `
+      <h1 class="screen-title">Emuladores · ${esc(info.name)}</h1>
+      <div class="emu-topbar">
+        <div class="btn btn--sm btn--secondary" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="emu:back" data-act="emu-back">${icon('back')}Todas las consolas</div>
+      </div>
+      <section class="games-console-card emu-console-card" style="--c1:${info.c1};--c2:${info.c2}">
+        <div class="games-console-art emu-console-art"><span>${esc(info.short)}</span></div>
         <div class="games-console-info">
-          <span class="games-kicker">CONSOLA DISPONIBLE</span>
-          <h2>Super Nintendo (SNES)</h2>
-          <p>EmulatorJS · Núcleo Snes9x · Compatible con mando, teclado y controles en pantalla.</p>
+          <span class="games-kicker">${esc(info.maker.toUpperCase())}</span>
+          <h2>${esc(info.name)}</h2>
+          <p>EmulatorJS · Núcleo ${esc(info.engine)} · Compatible con mando, teclado y controles en pantalla.${info.note ? ` ${esc(info.note)}` : ''}</p>
           <div class="games-actions">
             <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
-                 data-fid="games:scan" data-act="games-scan">${icon('search')}Buscar ROMs en Archivos</div>
+                 data-fid="emu:scan" data-act="emu-scan">${icon('search')}Buscar ROMs en Archivos</div>
             <div class="btn btn--secondary" role="button" tabindex="-1" data-focusable data-zone="main"
-                 data-fid="games:files" data-act="games-files">${icon('folder')}Abrir Gestor de archivos</div>
+                 data-fid="emu:files" data-act="emu-files">${icon('folder')}Abrir Gestor de archivos</div>
           </div>
         </div>
       </section>
-      <section class="games-library" data-games-library>
+      <section class="games-library" data-emu-library>
         <div class="games-library-head">
           <div>
-            <h2>Biblioteca de juegos</h2>
-            <p data-games-location>Busca ROMs dentro de la ubicación abierta en el Gestor de archivos.</p>
+            <h2>Biblioteca · ${esc(info.short)}</h2>
+            <p data-emu-location>Busca ROMs dentro de la ubicación abierta en el Gestor de archivos.</p>
           </div>
-          <span class="games-count" data-games-count>0 juegos</span>
+          <span class="games-count" data-emu-count>0 juegos</span>
         </div>
-        <div class="games-rom-list" data-games-rom-list>
-          <div class="games-empty">
-            <span>${icon('folder')}</span>
-            <h3>Aún no hay ROMs cargadas</h3>
-            <p>Abre el Gestor de archivos, selecciona la carpeta donde guardas tus ROMs o abre el almacenamiento interno y vuelve aquí para buscarlas.</p>
-          </div>
-        </div>
+        <div class="games-rom-list" data-emu-rom-list></div>
       </section>
-      <section class="games-player" data-games-player hidden>
+      <section class="games-player" data-emu-player hidden>
         <div class="games-player-head">
           <div class="games-now-playing">
-            <span class="games-kicker">REPRODUCIENDO</span>
-            <strong data-games-current-name></strong>
+            <span class="games-kicker">REPRODUCIENDO · ${esc(info.short)}</span>
+            <strong data-emu-current-name></strong>
           </div>
           <div class="games-player-actions">
             <div class="btn btn--sm" role="button" tabindex="-1" data-focusable data-zone="main"
-                 data-fid="games:fullscreen" data-act="games-fullscreen">${icon('fullscreen')}Pantalla completa</div>
+                 data-fid="emu:fullscreen" data-act="emu-fullscreen">${icon('fullscreen')}Pantalla completa</div>
             <div class="btn btn--sm" role="button" tabindex="-1" data-focusable data-zone="main"
-                 data-fid="games:stop" data-act="games-stop">${icon('close')}Salir del juego</div>
+                 data-fid="emu:stop" data-act="emu-stop">${icon('close')}Salir del juego</div>
           </div>
         </div>
-        <div class="games-frame-wrap" data-games-frame></div>
+        <div class="games-frame-wrap" data-emu-frame></div>
         <p class="games-controls-hint">Mando: cruceta + botones · Teclado: flechas y teclas configuradas por EmulatorJS · Mantén GUIDE 1,5 s para salir.</p>
       </section>`;
     this.#renderRomList();
+    const entry = this.library.get(info.id);
+    if (entry?.location) this.#setLocation(entry.location);
   }
 
-  focusEntry() {
-    this.focus.focusFirst('#screen-games [data-zone="main"]');
-    if (!this.hasScanned && this.files.rootDirectory) this.scan();
-  }
-
-  async handleBack() {
-    if (!this.isPlaying) return false;
-    this.stop();
-    return true;
-  }
-
-  async scan() {
-    if (this.scanning) return;
-    this.scanning = true;
-    const list = this.root.querySelector('[data-games-rom-list]');
-    if (list) list.innerHTML = '<div class="games-empty"><span class="games-spinner"></span><h3>Buscando ROMs…</h3><p>Revisando las carpetas del Gestor de archivos.</p></div>';
-    try {
-      const result = await this.files.findSnesRoms();
-      this.roms = result.roms;
-      this.hasScanned = true;
-      const backendNames = { native: 'carpeta del equipo', opfs: 'almacenamiento OPFS', idb: 'almacenamiento IndexedDB' };
-      const location = this.root.querySelector('[data-games-location]');
-      if (location) location.textContent = `${result.rootName} · ${backendNames[result.backend] || 'almacenamiento interno'}`;
-      if (result.truncated) toast('La búsqueda alcanzó el límite de seguridad. Se muestran los primeros resultados.', 4200);
-      this.#renderRomList();
-      toast(`${this.roms.length} ROM${this.roms.length === 1 ? '' : 's'} SNES encontrada${this.roms.length === 1 ? '' : 's'}.`);
-    } catch (error) {
-      this.roms = [];
-      this.hasScanned = false;
-      this.#renderRomList(error?.message || 'No se pudieron buscar las ROMs.');
-      toast(error?.message || 'No se pudieron buscar las ROMs.', 4200);
-    } finally {
-      this.scanning = false;
-      this.focus.focusByFid('games:scan');
-    }
+  #setLocation(text) {
+    const el = this.root.querySelector('[data-emu-location]');
+    if (el) el.textContent = text;
   }
 
   #renderRomList(message = '') {
-    const list = this.root.querySelector('[data-games-rom-list]');
-    const count = this.root.querySelector('[data-games-count]');
-    if (!list) return;
-    if (count) count.textContent = `${this.roms.length} juego${this.roms.length === 1 ? '' : 's'}`;
-    if (!this.roms.length) {
-      const text = message || (this.hasScanned
-        ? 'No encontramos ROMs SNES. Aceptamos archivos .sfc, .smc, .fig, .gd3, .gd7, .dx2, .bsx y .swc.'
+    const list = this.root.querySelector('[data-emu-rom-list]');
+    const count = this.root.querySelector('[data-emu-count]');
+    if (!list || !this.console) return;
+    const entry = this.library.get(this.console.id);
+    const roms = entry?.roms ?? [];
+    const scanned = Boolean(entry?.hasScanned);
+    if (count) count.textContent = `${roms.length} juego${roms.length === 1 ? '' : 's'}`;
+
+    if (this.scanning) {
+      list.innerHTML = '<div class="games-empty"><span class="games-spinner"></span><h3>Buscando ROMs…</h3><p>Revisando las carpetas del Gestor de archivos.</p></div>';
+      return;
+    }
+    if (!roms.length) {
+      const text = message || (scanned
+        ? `No encontramos ROMs de ${this.console.short}. Aceptamos archivos ${formatList(this.console.extensions)}.`
         : 'Busca ROMs dentro de la ubicación abierta en el Gestor de archivos.');
       list.innerHTML = `
         <div class="games-empty">
           <span>${icon('gamepad')}</span>
-          <h3>${this.hasScanned ? 'No se encontraron juegos' : 'Aún no hay ROMs cargadas'}</h3>
+          <h3>${scanned ? 'No se encontraron juegos' : 'Aún no hay ROMs cargadas'}</h3>
           <p>${esc(text)}</p>
         </div>`;
       return;
     }
-    list.innerHTML = this.roms.map((rom, index) => `
+    list.innerHTML = roms.map((rom, index) => `
       <article class="games-rom-card">
         <div class="games-rom-icon">${icon('gamepad')}</div>
         <div class="games-rom-info">
@@ -4467,29 +4807,116 @@ class GamesScreen {
           <span>${esc(rom.path)} · ${readableSize(rom.size)}</span>
         </div>
         <div class="btn btn--sm" role="button" tabindex="-1" data-focusable data-zone="main"
-             data-fid="games:rom:${index}" data-act="games-play" data-index="${index}">
+             data-fid="emu:rom:${index}" data-act="emu-play" data-index="${index}">
           ${icon('play')}Jugar
         </div>
       </article>`).join('');
+  }
+
+  // ------------------------------------------------------------ navegación
+
+  focusEntry() {
+    if (!this.console) {
+      this.focus.focusFirst('#screen-emulators [data-zone="main"]');
+      return;
+    }
+    this.focus.focusFirst('#screen-emulators [data-zone="main"]');
+    if (!this.library.get(this.console.id)?.hasScanned && this.files.rootDirectory) this.scan();
+  }
+
+  /** Vuelve al catálogo al salir de la pantalla (p. ej. al ir a Inicio). */
+  reset() {
+    this.stop({ restore: false });
+    if (this.console) {
+      this.console = null;
+      this.render();
+    }
+  }
+
+  openConsole(id, { focus = true } = {}) {
+    const info = getConsole(id);
+    if (!info) return;
+    this.stop({ restore: false });
+    this.console = info;
+    this.render();
+    if (focus) this.focusEntry();
+  }
+
+  closeConsole() {
+    const previous = this.console?.id;
+    this.stop({ restore: false });
+    this.console = null;
+    this.render();
+    this.focus.focusByFid(previous ? `emu:console:${previous}` : '')
+      || this.focus.focusFirst('#screen-emulators [data-zone="main"]');
+  }
+
+  async handleBack() {
+    if (this.isPlaying) {
+      this.stop();
+      return true;
+    }
+    if (this.console) {
+      this.closeConsole();
+      return true;
+    }
+    return false;
+  }
+
+  // ------------------------------------------------------------ ROMs
+
+  async scan() {
+    if (this.scanning || !this.console) return;
+    const info = this.console;
+    this.scanning = true;
+    this.#renderRomList();
+    try {
+      const result = await this.files.findRoms(info.extensions);
+      const backendNames = { native: 'carpeta del equipo', opfs: 'almacenamiento OPFS', idb: 'almacenamiento IndexedDB' };
+      const location = `${result.rootName} · ${backendNames[result.backend] || 'almacenamiento interno'}`;
+      this.library.set(info.id, { roms: result.roms, hasScanned: true, location });
+      if (result.truncated) toast('La búsqueda alcanzó el límite de seguridad. Se muestran los primeros resultados.', 4200);
+      const n = result.roms.length;
+      toast(`${n} ROM${n === 1 ? '' : 's'} de ${info.short} encontrada${n === 1 ? '' : 's'}.`);
+      this.scanning = false;
+      if (this.console === info) {
+        this.#setLocation(location);
+        this.#renderRomList();
+      }
+    } catch (error) {
+      this.library.set(info.id, { roms: [], hasScanned: false, location: '' });
+      this.scanning = false;
+      if (this.console === info) this.#renderRomList(error?.message || 'No se pudieron buscar las ROMs.');
+      toast(error?.message || 'No se pudieron buscar las ROMs.', 4200);
+    } finally {
+      this.scanning = false;
+      if (this.console === info) this.focus.focusByFid('emu:scan');
+    }
   }
 
   async #onClick(event) {
     const action = event.target.closest('[data-act]');
     if (!action) return;
     switch (action.dataset.act) {
-      case 'games-scan':
+      case 'emu-open':
+        this.openConsole(action.dataset.console);
+        break;
+      case 'emu-back':
+        this.closeConsole();
+        break;
+      case 'emu-scan':
         await this.scan();
         break;
-      case 'games-files':
+      case 'emu-files':
         this.onOpenFiles?.();
         break;
-      case 'games-play':
+      case 'emu-play':
         await this.play(Number(action.dataset.index));
         break;
-      case 'games-stop':
+      case 'emu-stop':
         this.stop();
         break;
-      case 'games-fullscreen':
+      case 'emu-fullscreen':
         this.#fullscreen();
         break;
       default:
@@ -4497,29 +4924,32 @@ class GamesScreen {
     }
   }
 
+  // ------------------------------------------------------------ emulador
+
   async play(index) {
-    const rom = this.roms[index];
-    if (!rom || this.isPlaying) return;
+    const info = this.console;
+    const rom = this.library.get(info?.id)?.roms[index];
+    if (!info || !rom || this.isPlaying) return;
     this.stop({ restore: false });
     this.currentRom = rom;
     this.romUrl = URL.createObjectURL(rom.file);
     this.isPlaying = true;
-    const library = this.root.querySelector('[data-games-library]');
-    const player = this.root.querySelector('[data-games-player]');
-    const frameHost = this.root.querySelector('[data-games-frame]');
-    const title = this.root.querySelector('[data-games-current-name]');
+    const library = this.root.querySelector('[data-emu-library]');
+    const player = this.root.querySelector('[data-emu-player]');
+    const frameHost = this.root.querySelector('[data-emu-frame]');
+    const title = this.root.querySelector('[data-emu-current-name]');
     if (library) library.hidden = true;
     if (player) player.hidden = false;
     if (title) title.textContent = rom.name;
 
     const iframe = document.createElement('iframe');
     iframe.className = 'games-emulator-frame';
-    iframe.title = `Emulador SNES: ${rom.name}`;
+    iframe.title = `Emulador ${info.short}: ${rom.name}`;
     iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-pointer-lock allow-forms');
     iframe.setAttribute('allow', 'autoplay; fullscreen; gamepad');
     iframe.setAttribute('allowfullscreen', '');
     iframe.setAttribute('tabindex', '0');
-    iframe.srcdoc = this.#emulatorDocument(this.romUrl);
+    iframe.srcdoc = this.#emulatorDocument(info, rom, this.romUrl);
     this.iframe = iframe;
     frameHost?.replaceChildren(iframe);
     iframe.addEventListener('load', () => iframe.focus(), { once: true });
@@ -4527,15 +4957,16 @@ class GamesScreen {
     toast(`Iniciando ${rom.name}…`);
   }
 
-  #emulatorDocument(romUrl) {
+  #emulatorDocument(info, rom, romUrl) {
     const scriptOpen = '<scr' + 'ipt>';
     const scriptClose = '</scr' + 'ipt>';
+    const gameName = rom.name.replace(/\.[^.]+$/, '');
     return `<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Emulador SNES · WebBox OS</title>
+<title>Emulador ${info.short} · WebBox OS</title>
 <style>
   *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:#fff;font:14px system-ui,sans-serif}
   #game{width:100%;height:100%;min-height:260px}#load-error{display:none;position:absolute;inset:0;z-index:50;padding:28px;background:#111827;color:#fecaca;line-height:1.6}
@@ -4543,10 +4974,11 @@ class GamesScreen {
 </head>
 <body>
   <div id="game"></div>
-  <div id="load-error">No se pudo descargar el emulador SNES. Comprueba tu conexión a Internet y vuelve a cargar el juego.</div>
+  <div id="load-error">No se pudo descargar el emulador de ${info.short}. Comprueba tu conexión a Internet y vuelve a cargar el juego.</div>
   ${scriptOpen}
     window.EJS_player = '#game';
-    window.EJS_core = 'snes';
+    window.EJS_core = ${JSON.stringify(info.core)};
+    window.EJS_gameName = ${JSON.stringify(gameName)};
     window.EJS_language = 'es-419';
     window.EJS_gameUrl = ${JSON.stringify(romUrl)};
     window.EJS_pathtodata = ${JSON.stringify(EMULATOR_DATA)};
@@ -4558,7 +4990,7 @@ class GamesScreen {
       if (event.key === 'Escape' || event.key === 'BrowserBack') {
         event.preventDefault();
         event.stopImmediatePropagation();
-        window.parent.postMessage({ source: 'webbox-snes', action: 'exit' }, '*');
+        window.parent.postMessage({ source: 'webbox-emulator', action: 'exit' }, '*');
       }
     }, true);
     var loader = document.createElement('script');
@@ -4588,16 +5020,16 @@ class GamesScreen {
     if (this.romUrl) URL.revokeObjectURL(this.romUrl);
     this.romUrl = null;
     this.currentRom = null;
-    const library = this.root.querySelector('[data-games-library]');
-    const player = this.root.querySelector('[data-games-player]');
-    const frameHost = this.root.querySelector('[data-games-frame]');
+    const library = this.root.querySelector('[data-emu-library]');
+    const player = this.root.querySelector('[data-emu-player]');
+    const frameHost = this.root.querySelector('[data-emu-frame]');
     if (frameHost) frameHost.replaceChildren();
     if (library) library.hidden = false;
     if (player) player.hidden = true;
-    if (restore) this.focus.focusByFid('games:scan');
+    if (restore) this.focus.focusByFid('emu:scan');
   }
 }
-    Object.assign(exports, { isSnesRomName, GamesScreen });
+    Object.assign(exports, { isSnesRomName, EmulatorsScreen });
   };
   __modules["js/music.js"] = function (module, exports, __require) {
 /**
@@ -4997,6 +5429,10 @@ class MusicScreen {
  * url acepta:
  *   - YouTube: https://www.youtube.com/watch?v=XXXXXXXXXXX  (también listas y youtu.be)
  *   - Archivo de video: assets/movies/mi-pelicula.mp4  (.mp4 .webm .ogv .mov .mkv)
+ *   - Reproductor web: la dirección del <iframe> que da el sitio en Compartir / Insertar / Embed
+ *     (https://…/embed/…). También sirven enlaces de Vimeo, Dailymotion, Google Drive y Archive.org.
+ *
+ * En SERIES, cada serie es una fila: pon el nombre de la serie en `category` y un elemento por capítulo.
  */
 
 const YOUTUBE_DEFAULTS = [
@@ -5006,7 +5442,11 @@ const YOUTUBE_DEFAULTS = [
 const MOVIES_DEFAULTS = [
   // { title: 'Mi película', url: 'assets/movies/mi-pelicula.mp4', category: 'Acción', image: 'assets/movies/mi-pelicula.jpg' },
 ];
-    Object.assign(exports, { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS });
+
+const SERIES_DEFAULTS = [
+  // { title: 'Capítulo 1', url: 'https://…/embed/…', category: 'Mi serie', image: 'https://…/poster.jpg' },
+];
+    Object.assign(exports, { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS, SERIES_DEFAULTS });
   };
   __modules["js/cardMenu.js"] = function (module, exports, __require) {
 /**
@@ -5193,11 +5633,11 @@ const { api } = __require("js/api.js");
 const { Player } = __require("js/player.js");
 const { Dialog } = __require("js/dialog.js");
 const { FilesScreen } = __require("js/files.js");
-const { GamesScreen } = __require("js/games.js");
+const { EmulatorsScreen } = __require("js/emulators.js");
 const { MusicScreen } = __require("js/music.js");
 const { getHandle, saveHandle, removeHandle, getStoredFile, supportsFileSystemAccess } = __require("js/fileSystem.js");
-const { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS } = __require("js/data/library.js");
-const { parseMediaUrl } = __require("js/core/media.js");
+const { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS, SERIES_DEFAULTS } = __require("js/data/library.js");
+const { splitLinks } = __require("js/core/media.js");
 const { BACKGROUNDS } = __require("js/data/apps.js");
 const { getBackground, customIdFromValue } = __require("js/backgroundStore.js");
 const { CardMenu } = __require("js/cardMenu.js");
@@ -5223,7 +5663,7 @@ class WebBoxOS {
       movies: $('#screen-movies'),
       music: $('#screen-music'),
       files: $('#screen-files'),
-      games: $('#screen-games'),
+      emulators: $('#screen-emulators'),
       settings: $('#screen-settings'),
     };
     this.current = 'home';
@@ -5253,11 +5693,25 @@ class WebBoxOS {
     this.cardMenu = new CardMenu({ el: $('#cardmenu'), focus: this.focus });
     const common = {
       onPlay: (item, lib) => this.#playLibraryItem(item, lib),
-      onAdd: (lib) => this.#openAddDialog(lib),
+      onAdd: (lib, opts) => this.#openAddDialog(lib, opts),
       onExtra: (extra) => {
         if (extra === 'youtube-site') window.open('https://www.youtube.com/', '_blank', 'noopener');
       },
     };
+    // Películas y Series comparten la pantalla "Películas": dos paneles y, arriba, las pestañas.
+    const cinemaTabs = [
+      { id: 'movies', label: 'Películas', icon: 'film' },
+      { id: 'series', label: 'Series', icon: 'tv' },
+    ];
+    this.cinemaTab = storage.get('cinemaTab', 'movies') === 'series' ? 'series' : 'movies';
+    const panes = {};
+    for (const id of ['movies', 'series']) {
+      panes[id] = document.createElement('div');
+      panes[id].dataset.pane = id;
+      panes[id].hidden = id !== this.cinemaTab;
+      this.screens.movies.appendChild(panes[id]);
+    }
+    const cinema = { tabs: cinemaTabs, onTab: (id) => this.#setCinemaTab(id) };
     this.libraries = {
       youtube: new LibraryScreen({
         ...common,
@@ -5278,18 +5732,40 @@ class WebBoxOS {
       }),
       movies: new LibraryScreen({
         ...common,
+        ...cinema,
         id: 'movies',
-        root: this.screens.movies,
+        root: panes.movies,
         defaults: MOVIES_DEFAULTS,
         title: 'Películas',
-        subtitle: 'Tu biblioteca. Agrega enlaces de YouTube, archivos del equipo desde Archivos o rutas de video locales.',
+        subtitle:
+          'Tu biblioteca. Agrega el enlace o el código <iframe> de un reproductor web, enlaces de YouTube, archivos del equipo desde Archivos o rutas de video locales.',
+        addLabel: 'Agregar película',
         defaultCategory: 'Mis películas',
         cardStyle: 'poster',
         cardIcon: 'film',
-        accept: ['youtube', 'video'],
+        accept: ['youtube', 'video', 'embed'],
         emptyText:
-          '<b>Aquí irán tus películas.</b><br>Pulsa <b>Agregar</b> para guardar un enlace o abre <b>Archivos</b> ' +
-          'y usa <b>Agregar a Películas</b> sobre cualquier video del equipo.',
+          '<b>Aquí irán tus películas.</b><br>Pulsa <b>Agregar película</b> y pega el enlace (o el código <b>&lt;iframe&gt;</b>) del reproductor, ' +
+          'o abre <b>Archivos</b> y usa <b>Agregar a Películas</b> sobre cualquier video del equipo.',
+      }),
+      series: new LibraryScreen({
+        ...common,
+        ...cinema,
+        id: 'series',
+        root: panes.series,
+        defaults: SERIES_DEFAULTS,
+        title: 'Series',
+        subtitle:
+          'Cada serie es una fila y cada capítulo una casilla. Termina la fila con + para sumar capítulos; al acabar uno pasa al siguiente.',
+        addLabel: 'Agregar serie',
+        rowAddLabel: 'Agregar capítulo',
+        defaultCategory: 'Mis series',
+        cardStyle: 'wide',
+        cardIcon: 'tv',
+        accept: ['youtube', 'video', 'embed'],
+        emptyText:
+          '<b>Aquí irán tus series.</b><br>Pulsa <b>Agregar serie</b>, escribe el nombre y pega el enlace (o el código <b>&lt;iframe&gt;</b>) ' +
+          'de uno o varios capítulos separados por espacio.',
       }),
     };
     this.files = new FilesScreen({
@@ -5324,8 +5800,8 @@ class WebBoxOS {
       onDelete: (item) => this.#confirmDeleteSong(item),
     });
     this.musicLib.onChange = () => this.music.render();
-    this.games = new GamesScreen({
-      root: this.screens.games,
+    this.emulators = new EmulatorsScreen({
+      root: this.screens.emulators,
       focus: this.focus,
       files: this.files,
       onOpenFiles: () => this.navigate('files', { enter: true }),
@@ -5349,7 +5825,7 @@ class WebBoxOS {
     for (const lib of Object.values(this.libraries)) lib.render();
     this.files.render();
     this.music.render();
-    this.games.render();
+    this.emulators.render();
     this.settings.render();
     this.#applyDisplay();
     this.#bindEvents();
@@ -5435,7 +5911,7 @@ class WebBoxOS {
     // Con el reproductor abierto, la primera pulsación solo muestra los controles ocultos.
     if (this.player.handleAction(action)) return;
     // Mientras se juega, el propio emulador recibe las entradas del mando.
-    if (this.games?.isPlaying) return;
+    if (this.emulators?.isPlaying) return;
     if (
       this.current === 'music' && !this.dialog.isOpen && !this.cardMenu.isOpen &&
       !this.player.isOpen && !this.overlayOpen && this.music.handleAction(action)
@@ -5468,10 +5944,11 @@ class WebBoxOS {
    * Cambia de pantalla. `enter` además mueve el foco al contenido.
    */
   navigate(name, { enter = false } = {}) {
-    if (!this.screens[name] && name !== 'emulators') return;
-    // "Emuladores" abre directamente el emulador de SNES (la pantalla de juegos).
-    const view = name === 'emulators' ? 'games' : name;
-    if (this.current === 'games' && view !== 'games') this.games?.stop({ restore: false });
+    if (!this.screens[name]) return;
+    const view = name;
+    if (this.current === 'emulators' && view !== 'emulators') this.emulators?.reset();
+    // Pulsar OK en "Emuladores" estando dentro de una consola vuelve al selector de consolas.
+    if (enter && view === 'emulators' && this.current === 'emulators') this.emulators.reset();
 
     if (view !== this.current) {
       for (const [key, el] of Object.entries(this.screens)) el.hidden = key !== view;
@@ -5487,8 +5964,6 @@ class WebBoxOS {
       for (const item of this.sidebar.querySelectorAll('[data-screen]')) {
         item.classList.toggle('is-current', item.dataset.screen === name);
       }
-      const title = this.screens.games.querySelector('.screen-title');
-      if (title) title.textContent = name === 'emulators' ? 'Emuladores · Super Nintendo' : 'Juegos';
     }
     if (enter) this.#enterScreen(view);
   }
@@ -5498,10 +5973,13 @@ class WebBoxOS {
       this.settings.focusEntry();
     } else if (name === 'files') {
       this.files.focusEntry();
-    } else if (name === 'games') {
-      this.games.focusEntry();
+    } else if (name === 'emulators') {
+      this.emulators.focusEntry();
     } else if (name === 'music') {
       this.music.focusEntry();
+    } else if (name === 'movies') {
+      const lib = this.libraries[this.cinemaTab];
+      if (!this.focus.focusByFid(lib.fid(`tab:${this.cinemaTab}`))) this.focus.focusFirst('[data-zone="main"]');
     } else {
       this.focus.focusFirst('[data-zone="main"]');
     }
@@ -5525,7 +6003,7 @@ class WebBoxOS {
       return;
     }
     if (this.current === 'files' && await this.files.handleBack()) return;
-    if (this.current === 'games' && await this.games.handleBack()) return;
+    if (this.current === 'emulators' && await this.emulators.handleBack()) return;
     if (this.settings.handleBack()) return;
     if (this.current !== 'home') {
       this.navigate('home', { enter: true });
@@ -5544,7 +6022,7 @@ class WebBoxOS {
     if (this.dialog.isOpen) this.dialog.close({ restore: false });
     if (this.player.isOpen) this.player.close({ restore: false });
     if (this.files?.viewerOpen) this.files.closeViewer({ restore: false });
-    this.games?.stop({ restore: false });
+    this.emulators?.stop({ restore: false });
     if (this.files?.targetOpen) this.files.closeTargetPicker();
     if (this.overlayOpen) this.closeOverlay({ restore: false });
     if (this.settings.capturing) this.settings.cancelCapture();
@@ -5720,51 +6198,123 @@ class WebBoxOS {
 
   // ------------------------------------------------------- bibliotecas
 
-  #openAddDialog(lib) {
+  #openAddDialog(lib, { category = '' } = {}) {
     const isMovies = lib.id === 'movies';
+    const isSeries = lib.id === 'series';
     const isMusic = lib.id === 'music';
-    this.dialog.open({
-      title: isMovies ? 'Agregar película' : isMusic ? 'Agregar música' : 'Agregar a YouTube',
-      hint: isMovies
-        ? 'Enlace de YouTube o ruta de un archivo (assets/movies/mi-pelicula.mp4). Pulsa OK en un campo para escribir.'
-        : isMusic
-          ? 'Pega el enlace de YouTube de la canción (o de una lista). Si dejas el título o el artista vacíos se intentan obtener solos.'
-          : 'Pega un enlace de video o lista de YouTube. Si dejas el título vacío se intenta obtener solo.',
-      fields: isMusic
-        ? [
-            { key: 'url', label: 'Enlace de YouTube', placeholder: 'https://www.youtube.com/watch?v=…' },
-            { key: 'title', label: 'Título de la canción (opcional)', placeholder: 'Se completa solo' },
-            { key: 'artist', label: 'Artista (opcional)', placeholder: 'Se completa solo' },
-          ]
-        : [
-            { key: 'url', label: 'Enlace o ruta', placeholder: isMovies ? 'https://… o assets/movies/…mp4' : 'https://www.youtube.com/watch?v=…' },
-            { key: 'title', label: isMovies ? 'Título' : 'Título (opcional)', placeholder: isMovies ? 'Nombre de la película' : 'Se completa solo' },
-            { key: 'category', label: 'Categoría (fila donde aparece)', value: '', placeholder: lib.defaultCategory },
-            ...(isMovies ? [{ key: 'image', label: 'Póster (opcional)', placeholder: 'assets/movies/mi-pelicula.jpg' }] : []),
-          ],
-      onSubmit: (values) => this.#submitItem(lib, values),
-    });
+    const WEB_HINT =
+      'Pega el enlace o el código <iframe> del reproductor (en la web suele estar en Compartir / Insertar / Embed), ' +
+      'un enlace de YouTube o la ruta de un archivo (assets/movies/mi-pelicula.mp4).';
+    let title = 'Agregar a YouTube';
+    let hint = 'Pega un enlace de video o lista de YouTube. Si dejas el título vacío se intenta obtener solo.';
+    let fields = [
+      { key: 'url', label: 'Enlace o ruta', placeholder: 'https://www.youtube.com/watch?v=…' },
+      { key: 'title', label: 'Título (opcional)', placeholder: 'Se completa solo' },
+      { key: 'category', label: 'Categoría (fila donde aparece)', value: '', placeholder: lib.defaultCategory },
+    ];
+    if (isMusic) {
+      title = 'Agregar música';
+      hint = 'Pega el enlace de YouTube de la canción (o de una lista). Si dejas el título o el artista vacíos se intentan obtener solos.';
+      fields = [
+        { key: 'url', label: 'Enlace de YouTube', placeholder: 'https://www.youtube.com/watch?v=…' },
+        { key: 'title', label: 'Título de la canción (opcional)', placeholder: 'Se completa solo' },
+        { key: 'artist', label: 'Artista (opcional)', placeholder: 'Se completa solo' },
+      ];
+    } else if (isMovies) {
+      title = 'Agregar película';
+      hint = `${WEB_HINT} Pulsa OK en un campo para escribir.`;
+      fields = [
+        { key: 'url', label: 'Enlace, código <iframe> o ruta', placeholder: 'https://… o <iframe src="…"> o assets/movies/…mp4' },
+        { key: 'title', label: 'Título', placeholder: 'Nombre de la película' },
+        { key: 'category', label: 'Categoría (fila donde aparece)', value: '', placeholder: lib.defaultCategory },
+        { key: 'image', label: 'Póster (opcional)', placeholder: 'https://… o assets/movies/mi-pelicula.jpg' },
+      ];
+    } else if (isSeries) {
+      title = category ? `Agregar capítulo a ${category}` : 'Agregar serie';
+      hint = `${WEB_HINT} Para varios capítulos de una vez, pega varios enlaces separados por espacio. Pulsa OK en un campo para escribir.`;
+      fields = [
+        { key: 'serie', label: 'Nombre de la serie', value: category, placeholder: 'Ej.: Mi serie' },
+        { key: 'url', label: 'Enlace(s) del capítulo o código <iframe>', placeholder: 'https://… https://… (uno por capítulo)' },
+        { key: 'title', label: 'Título del capítulo (opcional)', placeholder: 'Si lo dejas vacío: Capítulo 1, 2, 3…' },
+        { key: 'image', label: 'Póster de la serie (opcional)', placeholder: 'https://…' },
+      ];
+    }
+    this.dialog.open({ title, hint, fields, onSubmit: (values) => this.#submitItem(lib, values) });
   }
 
   async #submitItem(lib, values) {
-    const media = parseMediaUrl(values.url);
-    if (!media) return 'Enlace no válido. Usa un enlace de YouTube o un archivo .mp4 / .webm.';
+    if (lib.id === 'series') return this.#submitEpisodes(lib, values);
+
+    // En Películas se acepta también código <iframe>: se usa solo la dirección del reproductor.
+    let url = values.url;
+    if (lib.accept.includes('embed')) {
+      const links = splitLinks(values.url);
+      if (links.length > 1) return 'Para una película pega un solo enlace. Para varios capítulos usa Series.';
+      url = links[0] ?? values.url;
+    }
+    const media = lib.parse(url);
+    if (!media) return lib.invalidText;
     const isMusic = lib.id === 'music';
     let title = values.title;
     let artist = values.artist || '';
     if ((!title || (isMusic && !artist)) && media.type === 'youtube' && media.videoId) {
-      const info = await fetchYouTubeInfo(values.url);
+      const info = await fetchYouTubeInfo(url);
       title = title || info.title;
       if (isMusic) artist = artist || info.author.replace(/\s*-\s*Topic$/i, '');
     }
     if (!title) return 'Escribe un título para este elemento.';
 
-    const result = lib.add({ ...values, title, artist });
+    const result = lib.add({ ...values, url, title, artist });
     if (typeof result === 'string') return result;
     toast(`Agregado: ${result.title}`);
     // El foco vuelve a la tarjeta nueva cuando el formulario se cierre.
     this.dialog.returnFid = lib.fid(result.id);
     return null;
+  }
+
+  /** Series: cada serie es una categoría (fila) y cada capítulo, un elemento de esa fila. */
+  #submitEpisodes(lib, values) {
+    const serie = (values.serie || '').trim();
+    if (!serie) return 'Escribe el nombre de la serie.';
+    const links = splitLinks(values.url);
+    if (!links.length) return 'Pega el enlace del capítulo (o el código <iframe> del reproductor).';
+    for (const [i, link] of links.entries()) {
+      if (!lib.parse(link)) {
+        return links.length > 1 ? `El enlace ${i + 1} no es válido: ${link.slice(0, 60)}` : lib.invalidText;
+      }
+    }
+
+    const existing = lib.items().filter((it) => it.category === serie);
+    // Los capítulos nuevos heredan el póster de la serie si no se indica otro.
+    const image = values.image || existing.find((it) => it.image)?.image || '';
+    const created = [];
+    for (const [i, link] of links.entries()) {
+      const number = existing.length + i + 1;
+      let title = `Capítulo ${number}`;
+      if (values.title) title = links.length === 1 ? values.title : `${values.title} ${number}`;
+      const result = lib.add({ title, url: link, category: serie, image });
+      if (typeof result === 'string') return result;
+      created.push(result);
+    }
+    toast(
+      created.length === 1
+        ? `Agregado: ${serie} · ${created[0].title}`
+        : `Agregados ${created.length} capítulos a ${serie}`,
+    );
+    this.dialog.returnFid = lib.fid(created[0].id);
+    return null;
+  }
+
+  /** Cambia entre Películas y Series (pestañas de arriba). */
+  #setCinemaTab(id) {
+    if (!this.libraries[id] || id === this.cinemaTab) return;
+    this.cinemaTab = id;
+    storage.set('cinemaTab', id);
+    for (const [key, lib] of Object.entries({ movies: this.libraries.movies, series: this.libraries.series })) {
+      lib.root.hidden = key !== id;
+    }
+    this.libraries[id].render();
+    this.focus.focusByFid(this.libraries[id].fid(`tab:${id}`));
   }
 
   // ---------------------------------------------------- servidor / base de datos
@@ -5832,11 +6382,20 @@ class WebBoxOS {
     });
   }
 
-  async #playLibraryItem(item, lib) {
+  /** Capítulos de la misma serie (misma fila), para Anterior / Siguiente y paso automático. */
+  #episodesOf(item, lib) {
+    const list = lib.items().filter((i) => i.category === item.category && !i.fileHandleKey);
+    const index = list.findIndex((i) => i.id === item.id);
+    if (index < 0 || list.length < 2) return undefined;
+    return { list, index, onGo: (next, extra) => this.#playLibraryItem(next, lib, extra) };
+  }
+
+  async #playLibraryItem(item, lib, extra = {}) {
     this.music.pause();
     const onDelete = (it) => this.#deleteItem(lib, it);
     if (!item.fileHandleKey) {
-      this.player.open(item, { onDelete });
+      const episodes = lib.id === 'series' ? this.#episodesOf(item, lib) : undefined;
+      this.player.open(item, { onDelete, episodes, returnFid: extra.returnFid });
       return;
     }
     try {

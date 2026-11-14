@@ -146,6 +146,17 @@ await test('el texto se guarda sin espacios sobrantes', async () => {
   assert.equal(r.data.item.title, 'Con espacios');
   assert.equal(r.data.item.url, 'https://youtu.be/abcdefghijk');
 });
+await test('series: capítulos con reproductor web (http), ruta relativa y sin duplicados', async () => {
+  const ep = { kind: 'series', title: 'Capítulo 1', category: 'Mi serie' };
+  assert.equal((await post({ ...ep, url: 'https://reproductor.example.com/embed/abc123' })).status, 201);
+  assert.equal((await post({ ...ep, url: 'https://reproductor.example.com/embed/abc123' })).status, 409);
+  assert.equal((await post({ ...ep, title: 'Capítulo 2', url: 'assets/movies/serie-02.mp4' })).status, 201);
+  assert.equal((await post({ ...ep, url: 'javascript:alert(1)' })).status, 422);
+  assert.equal((await post({ ...ep, url: '<iframe src="https://a.com/e"></iframe>' })).status, 422); // el cliente envía solo la dirección
+  const list = (await api('/api/items?kind=series')).data.items;
+  assert.equal(list.length, 2);
+  assert.ok(list.every((i) => i.kind === 'series' && i.category === 'Mi serie'));
+});
 await test('validateItem (unitaria)', () => {
   assert.equal(validateItem(null).ok, false);
   assert.equal(validateItem({ kind: 'music', title: 'a', url: 'https://a.com' }).ok, true);

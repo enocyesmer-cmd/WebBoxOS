@@ -113,7 +113,7 @@ class ApiClient {
 
   /** Cantidad de elementos por tipo (según la última descarga). */
   counts() {
-    const out = { youtube: 0, music: 0, movies: 0 };
+    const out = { youtube: 0, music: 0, movies: 0, series: 0 };
     for (const item of this.items) {
       if (item.kind in out) out[item.kind] += 1;
     }

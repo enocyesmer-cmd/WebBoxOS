@@ -1,4 +1,4 @@
-# WebBox OS — Launcher + control remoto + multimedia + Archivos + SNES + fondos personalizados
+# WebBox OS — Launcher + control remoto + multimedia + Archivos + Emuladores + fondos personalizados
 
 Launcher estilo Android TV / Google TV que corre en el navegador, sin frameworks ni dependencias.
 Incluye navegación por foco, teclado, mouse y mandos compatibles con la Gamepad API.
@@ -70,32 +70,35 @@ operaciones solo afectan a los datos de WebBox OS. Los archivos importados puede
 espacio del almacenamiento web y están sujetos a la cuota del navegador; para contenido muy
 grande se recomienda utilizar una carpeta del equipo cuando sea compatible.
 
-## Juegos · Super Nintendo (SNES)
+## Emuladores (SNES · NES · N64 · Game Boy · GBA)
 
-La sección **Juegos** integra EmulatorJS con el núcleo SNES (Snes9x). La interfaz del
-emulador se solicita en español latinoamericano (`es-419`). El reproductor se abre dentro
-de un `iframe` para aislar el motor del resto del launcher.
+La sección **Emuladores** (menú lateral y casilla de Aplicaciones) muestra un selector de
+consolas. Al elegir una, se abre su biblioteca de ROMs y el emulador correspondiente, que usa
+EmulatorJS dentro de un `iframe` aislado del launcher (interfaz en español latino, `es-419`).
+
+| Consola | Núcleo | Extensiones de ROM |
+|---|---|---|
+| Super Nintendo | Snes9x | `.sfc .smc .fig .gd3 .gd7 .dx2 .bsx .swc` |
+| Nintendo (NES) | FCEUmm | `.nes .unf .unif` |
+| Nintendo 64 | Mupen64Plus-Next | `.z64 .n64 .v64` |
+| Game Boy / Color | Gambatte | `.gb .gbc .sgb` |
+| Game Boy Advance | mGBA | `.gba` |
 
 1. Abre **Gestor de archivos** y selecciona la carpeta del PC donde guardas tus ROMs, o
    abre el almacenamiento interno y sube tus archivos.
-2. Entra en **Juegos** y pulsa **Buscar ROMs en Archivos**. La búsqueda recorre también
-   subcarpetas de la ubicación abierta.
-3. Selecciona **Jugar** en la ROM deseada. Puedes usar teclado, mando compatible o los
-   controles en pantalla que ofrece EmulatorJS.
-4. Para salir, usa **Salir del juego**, Escape o mantén pulsado GUIDE durante 1,5 segundos.
+2. Entra en **Emuladores**, elige la consola y pulsa **Buscar ROMs en Archivos** (recorre
+   también subcarpetas y solo lista las ROMs de esa consola).
+3. Selecciona **Jugar**. Puedes usar teclado, mando compatible o los controles en pantalla.
+4. Para salir, usa **Salir del juego**, Escape o mantén pulsado GUIDE 1,5 segundos.
+   Atrás desde una consola vuelve al selector de consolas.
 
-Se reconocen los formatos `.sfc`, `.smc`, `.fig`, `.gd3`, `.gd7`, `.dx2`, `.bsx` y `.swc`.
-No se incluyen ROMs en el proyecto. El archivo seleccionado se lee desde el Gestor de archivos
-y se entrega al emulador mediante una URL temporal `blob:`; WebBox OS no mueve ni modifica
-la ROM.
+Para añadir otra consola, agrégala en `js/data/consoles.js` (id, núcleo de EmulatorJS y
+extensiones). No se incluyen ROMs en el proyecto: el archivo seleccionado se lee desde el
+Gestor de archivos y se entrega al emulador mediante una URL temporal `blob:`.
 
-**Conexión necesaria:** esta integración descarga `loader.js`, el núcleo WebAssembly y los
-recursos de EmulatorJS desde `https://cdn.emulatorjs.org/stable/data/`. Por eso el juego
-requiere Internet y el núcleo no está incluido dentro del ZIP. La lectura de ROMs sí permanece
-en el almacenamiento local del navegador/equipo. La disponibilidad de ROMs y el uso de copias
-deben respetar los derechos de autor aplicables.
-
-**Emuladores** abre directamente el emulador de Super Nintendo (SNES): la misma biblioteca de ROMs de **Juegos**, con el título "Emuladores · Super Nintendo".
+**Conexión necesaria:** `loader.js`, los núcleos WebAssembly y los recursos de EmulatorJS se
+descargan desde `https://cdn.emulatorjs.org/stable/data/`, así que jugar requiere Internet.
+Nintendo 64 exige más rendimiento que el resto. Usa copias de juegos que tengas derecho a usar.
 
 ## Fondos personalizados
 
@@ -131,16 +134,17 @@ videos no permiten reproducirse fuera de YouTube (se avisa con un mensaje).
 ## Estructura
 
     index.html            estructura y pantallas
-    css/                  main · launcher · navigation · settings · media · files · games · emulators
+    css/                  main · launcher · navigation · settings · media · files · emulators
     js/main.js            arranque, router, overlay, reloj e integración de pantallas
     js/files.js           gestor de archivos, operaciones y selectores de destino
-    js/games.js           biblioteca de ROM y emulador SNES (EmulatorJS / Snes9x)
+    js/emulators.js       selector de consolas, biblioteca de ROM y emuladores (EmulatorJS)
+    js/data/consoles.js   consolas disponibles: núcleo y extensiones
     js/fileSystem.js      adaptadores de File System Access, OPFS e IndexedDB
-    js/player.js          reproductor de YouTube, video y audio
+    js/player.js          reproductor de YouTube, video, audio y reproductor web (iframe)
     js/core/              events · storage · config · focus · media
     js/input/             keyboard · gamepad
     js/launcher.js        filas y tarjetas
-    js/library.js         bibliotecas YouTube / Películas
+    js/library.js         bibliotecas YouTube / Películas / Series (pestañas, filas, casilla +)
     js/music.js           pantalla de Música (carrusel + reproductor de YouTube)
     js/settings.js        configuración, fondos personalizados y prueba de botones
     js/backgroundStore.js almacenamiento de varios fondos propios en IndexedDB
@@ -159,8 +163,8 @@ videos no permiten reproducirse fuera de YouTube (se avisa con un mensaje).
     python3 tools/build.py
 
 Las pruebas de lógica cubren foco espacial, mapeo y repetición de mando, conexión/desconexión,
-teclado, análisis de enlaces multimedia y detección de extensiones SNES. La navegación entre
-Emuladores y Juegos y la carga de un fondo personalizado se verificaron en Chromium con un
+teclado, análisis de enlaces multimedia y detección de extensiones de ROM por consola. La navegación del
+selector de Emuladores y la carga de un fondo personalizado se verificaron en Chromium con un
 documento de prueba y almacenamiento IndexedDB simulado. También se deben
 comprobar en un navegador local las operaciones de archivo con permisos reales y la descarga
 del núcleo EmulatorJS desde su CDN.
@@ -178,14 +182,58 @@ campo abre el teclado del sistema).
   en listas). YouTube no permite incrustar su sitio completo, así que no hay buscador interno:
   se agregan enlaces. Algunos videos tienen la reproducción incrustada desactivada por su dueño.
   Necesita internet.
-- **Películas:** acepta enlaces de YouTube, rutas de archivos dentro del proyecto (por ejemplo
-  `assets/movies/mi-pelicula.mp4`) y referencias locales agregadas desde Archivos.
+- **Películas y Series:** ver la sección siguiente.
 - Lo agregado desde la interfaz queda guardado en el navegador. Para dejar contenido fijo en el
   código, edita `js/data/library.js`. "Eliminar" está dentro del reproductor.
 
+## Películas y Series
+
+Al abrir la casilla **Películas** aparecen arriba dos pestañas, **Películas** y **Series**, y a su
+derecha el botón **Agregar película** / **Agregar serie** (cambia según la pestaña). La pestaña
+elegida se recuerda. Se navega con ←/→ entre pestañas, ↓ para bajar a las filas.
+
+**Qué se puede agregar** (en ambas pestañas):
+
+| Entrada | Cómo se reproduce |
+|---|---|
+| Enlace de YouTube (video o lista) | Reproductor de YouTube con controles propios |
+| Archivo `.mp4` / `.webm`… (enlace o ruta `assets/movies/…`) | Reproductor propio (pausa, ±10 s, sonido) |
+| Archivo del equipo (Archivos > **Agregar a Películas**) | Reproductor propio (solo Películas) |
+| **Reproductor web**: enlace o código `<iframe>` | Se incrusta tal cual en un marco (ver abajo) |
+
+**Reproductores web.** En el sitio donde ves el video, busca en su reproductor **Compartir /
+Insertar / Embed**, copia el código `<iframe …>` (o la dirección `https://…/embed/…`) y pégalo en
+**Enlace, código <iframe> o ruta**. WebBox OS toma solo la dirección (`src`) del `<iframe>`. Un
+`<iframe>` de YouTube se reproduce con el reproductor de YouTube; los enlaces de Vimeo,
+Dailymotion, Google Drive y Archive.org se convierten solos a su versión para incrustar. Se
+analiza únicamente el texto del enlace: WebBox OS **no entra a las páginas ni extrae los videos
+por su cuenta**, así que si un sitio no te da una dirección para incrustar, no hay forma de
+reproducirlo aquí (usa **Abrir en pestaña**).
+
+Cómo se comporta un reproductor web (es de otro dominio y WebBox OS no puede controlarlo):
+- Se inicia con un **clic dentro del propio reproductor**; el mando no puede pulsar su botón.
+  La barra superior (Cap. anterior/siguiente, Pantalla completa, Modo compatible, Abrir en
+  pestaña, Eliminar, Cerrar) sí se maneja con mando/teclado. Con el foco dentro del video, el
+  teclado lo recibe el video: usa **B** en el mando o el botón **Cerrar**.
+- Va en un marco con **sandbox**: bloquea ventanas emergentes y redirecciones de la página.
+  Algunos reproductores se niegan a funcionar así; entonces pulsa **Modo compatible** (recarga
+  sin restricciones, úsalo solo con sitios en los que confíes).
+- Si el sitio prohíbe incrustarse (cabeceras `X-Frame-Options` / CSP) el marco queda en blanco:
+  usa **Abrir en pestaña**.
+
+**Series.** Cada serie es una fila y cada capítulo, una casilla; al final de cada fila hay una
+casilla **+ Agregar capítulo** que ya trae el nombre de la serie. En **Agregar serie** escribe el
+nombre y pega uno o **varios enlaces/`<iframe>` separados por espacio** (uno por capítulo): se
+crean numerados ("Capítulo 1, 2, 3…", continuando los que ya existan) y heredan el póster de la
+serie. Dentro del reproductor hay **Cap. anterior / siguiente**, y al terminar un capítulo
+(YouTube o video directo) pasa solo al siguiente.
+
+Solo debes agregar contenido que tengas derecho a ver. WebBox OS guarda enlaces y títulos,
+nunca los videos.
+
 ## Base de datos SQLite (la más fácil, sin instalar nada)
 
-Por defecto el servidor usa el archivo `database/webbox.sqlite`, que se abre con **DB Browser for SQLite** (Archivo > Abrir base de datos). Sus tablas están en español: `videos_youtube`, `musica` y `peliculas` (columnas `titulo`, `enlace`, `categoria`, `imagen`, `artista`). Requiere **Node.js 22.5 o superior**; no hace falta `npm install`. Si prefieres MySQL, pon `STORE=mysql` en `.env` y sigue la sección de abajo.
+Por defecto el servidor usa el archivo `database/webbox.sqlite`, que se abre con **DB Browser for SQLite** (Archivo > Abrir base de datos). Sus tablas están en español: `videos_youtube`, `musica`, `peliculas` y `series` (en `series`, la columna `categoria` es el nombre de la serie; columnas `titulo`, `enlace`, `categoria`, `imagen`, `artista`). Requiere **Node.js 22.5 o superior**; no hace falta `npm install`. Si prefieres MySQL, pon `STORE=mysql` en `.env` y sigue la sección de abajo.
 
 ```
 npm start            # crea la base sola la primera vez y levanta la web en :8080
@@ -220,10 +268,12 @@ El catálogo (videos de YouTube, música y películas) puede vivir en MySQL y se
 Otros usuarios en tu red entran con la dirección LAN que imprime el servidor. Para internet, ponlo detrás de HTTPS (la clave viaja en una cabecera).
 
 ### API
-`GET /api/health`, `GET /api/items[?kind=youtube|music|movies]`, `GET /api/auth`, `POST /api/items`, `DELETE /api/items/:id` (las dos últimas con cabecera `X-Admin-Key`).
+`GET /api/health`, `GET /api/items[?kind=youtube|music|movies|series]`, `GET /api/auth`, `POST /api/items`, `DELETE /api/items/:id` (las dos últimas con cabecera `X-Admin-Key`).
 
 ### Juegos (JUEGOS/)
 La base de datos guarda solo **enlaces y metadatos**, nunca archivos de video, audio ni ROMs. El servidor **no sirve** la carpeta `JUEGOS/` (ni `server/`, `database/`, `.env`...): solo `index.html`, `manifest.json`, `css`, `js` y `assets`. Alojar ROMs de juegos comerciales para que otros los descarguen infringe derechos de autor, así que cada usuario juega cargando su propio archivo desde su dispositivo. `.gitignore` excluye `JUEGOS/` y las extensiones de ROM.
+
+**Si ya tenías MySQL creado:** ejecuta una vez `ALTER TABLE items MODIFY kind ENUM('youtube', 'music', 'movies', 'series') NOT NULL;` (SQLite crea la tabla `series` sola al arrancar).
 
 ### Pruebas
 `npm test` (lógica + API con almacén en memoria). `python3 tools/build.py` regenera `js/bundle.js`.

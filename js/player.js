@@ -5,7 +5,7 @@
  * El iframe de YouTube no recibe clics ni teclas (pointer-events:none y disablekb):
  * así el foco nunca se queda "atrapado" dentro y Atrás/Inicio siempre funcionan.
  */
-import { parseMediaUrl, formatTime } from './core/media.js';
+import { parsePlayable, formatTime } from './core/media.js';
 import { icon } from './icons.js';
 import { esc, toast } from './ui.js';
 
@@ -129,6 +129,66 @@ class VideoAdapter {
   destroy() { this.v?.pause(); this.v?.removeAttribute('src'); this.v?.load(); }
 }
 
+/**
+ * Reproductor web incrustado (iframe de cualquier sitio: el que pega el usuario).
+ * No se puede controlar desde fuera (es de otro dominio): se inicia con un clic
+ * dentro del propio reproductor. Por defecto va en un "sandbox" que bloquea
+ * ventanas emergentes y redirecciones de la página; el modo compatible lo quita
+ * para los reproductores que no funcionan dentro de un sandbox.
+ */
+const EMBED_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-presentation';
+
+class EmbedAdapter {
+  constructor(host, media, { onState, onError }) {
+    this.host = host;
+    this.media = media;
+    this.onState = onState;
+    this.onError = onError;
+    this.f = null;
+    this.safe = true;
+  }
+
+  #frame() {
+    const f = document.createElement('iframe');
+    f.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
+    f.allowFullscreen = true;
+    f.referrerPolicy = 'strict-origin-when-cross-origin';
+    f.title = 'Reproductor web';
+    if (this.safe) f.setAttribute('sandbox', EMBED_SANDBOX);
+    f.src = this.media.src;
+    return f;
+  }
+
+  async init() {
+    this.f = this.#frame();
+    this.host.replaceWith(this.f);
+  }
+
+  /** Recarga el reproductor con o sin sandbox. Devuelve true si quedó en modo compatible. */
+  toggleCompat() {
+    this.safe = !this.safe;
+    const next = this.#frame();
+    this.f.replaceWith(next);
+    this.f = next;
+    return !this.safe;
+  }
+
+  get isList() { return false; }
+  isPlaying() { return false; }
+  toggle() {}
+  seek() {}
+  time() { return [0, 0]; }
+  isMuted() { return false; }
+  toggleMute() {}
+  next() {}
+  prev() {}
+  destroy() {
+    if (!this.f) return;
+    this.f.src = 'about:blank';
+    this.f.remove();
+  }
+}
+
 class AudioAdapter {
   constructor(host, media, { onState, onError }) {
     this.host = host;
@@ -181,6 +241,8 @@ export class Player {
     this.returnFid = null;
     this.item = null;
     this.onDelete = null;
+    this.episodes = null;
+    this.media = null;
     this.confirmDelete = false;
     this.poll = 0;
     this.idleTimer = 0;
@@ -189,13 +251,19 @@ export class Player {
     el.addEventListener('mousemove', () => this.#show());
   }
 
-  async open(item, { onDelete } = {}) {
-    const media = parseMediaUrl(item.url);
+  /**
+   * @param {object} item
+   * @param {{onDelete?:Function, returnFid?:string,
+   *   episodes?:{list:object[], index:number, onGo:(item:object, extra:{returnFid:string})=>void}}} opts
+   *   `episodes` activa Anterior / Siguiente capítulo y el paso automático al terminar.
+   */
+  async open(item, { onDelete, episodes, returnFid } = {}) {
+    const media = parsePlayable(item.url);
     if (!media) {
       toast('Ese enlace no es válido. Elimínalo y vuelve a agregarlo.');
       return;
     }
-    return this.#open(item, media, { onDelete });
+    return this.#open(item, media, { onDelete, episodes, returnFid });
   }
 
   /** Abre un archivo local seleccionado desde Archivos o guardado en Películas. */
@@ -209,16 +277,20 @@ export class Player {
     );
   }
 
-  async #open(item, media, { onDelete, objectUrl } = {}) {
+  async #open(item, media, { onDelete, objectUrl, episodes, returnFid } = {}) {
     if (this.isOpen) {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       return;
     }
     this.item = item;
     this.onDelete = onDelete ?? null;
+    this.episodes = episodes && episodes.list.length > 1 ? episodes : null;
+    this.media = media;
     this.objectUrl = objectUrl ?? null;
     this.confirmDelete = false;
-    this.returnFid = this.focus.current?.dataset.fid ?? null;
+    this.returnFid = returnFid ?? this.focus.current?.dataset.fid ?? null;
+    const embed = media.type === 'embed';
+    const title = this.episodes && item.category ? `${item.category} · ${item.title}` : item.title;
     this.isOpen = true;
     document.body.classList.add('player-open');
 
@@ -226,7 +298,7 @@ export class Player {
       <div class="player-stage" data-stage><div data-host></div></div>
       ${media.type === 'audio' ? `<div class="player-audio-label">${icon('music')}<span>Reproduciendo audio</span></div>` : ''}
       <div class="player-msg" data-msg>Cargando…</div>
-      <div class="player-top"><span class="player-title">${esc(item.title)}</span></div>
+      <div class="player-top"><span class="player-title">${esc(title)}</span></div>
       <div class="player-controls">
         <div class="player-bar">
           <span data-cur>0:00</span>
@@ -234,25 +306,34 @@ export class Player {
           <span data-dur>0:00</span>
         </div>
         <div class="player-buttons">
-          ${this.#btn('toggle', 'playsolid', 'Reproducir')}
-          ${this.#btn('back', 'back10', '10 s')}
-          ${this.#btn('fwd', 'fwd10', '10 s')}
-          ${media.listId ? this.#btn('prev', 'prev', 'Anterior') + this.#btn('next', 'next', 'Siguiente') : ''}
-          ${this.#btn('mute', 'volume', 'Sonido')}
+          ${embed ? '' : this.#btn('toggle', 'playsolid', 'Reproducir')}
+          ${embed ? '' : this.#btn('back', 'back10', '10 s')}
+          ${embed ? '' : this.#btn('fwd', 'fwd10', '10 s')}
+          ${media.listId || this.episodes
+            ? this.#btn('prev', 'prev', this.episodes ? 'Cap. anterior' : 'Anterior') +
+              this.#btn('next', 'next', this.episodes ? 'Cap. siguiente' : 'Siguiente')
+            : ''}
+          ${embed ? '' : this.#btn('mute', 'volume', 'Sonido')}
           ${media.type !== 'audio' ? this.#btn('full', 'fullscreen', 'Pantalla completa') : ''}
+          ${embed ? this.#btn('compat', 'reset', 'Modo compatible') + this.#btn('tab', 'external', 'Abrir en pestaña') : ''}
           ${onDelete ? this.#btn('del', 'trash', 'Eliminar') : ''}
           ${this.#btn('close', 'close', 'Cerrar')}
         </div>
       </div>`;
     this.el.classList.toggle('is-audio', media.type === 'audio');
+    this.el.classList.toggle('is-embed', embed);
+    document.body.classList.toggle('player-embed', embed);
     this.el.classList.remove('is-idle');
     this.el.hidden = false;
     this.focus.clear();
     this.focus.pushScope(this.el);
-    this.focus.focusByFid('pl:toggle');
+    if (embed) this.focus.focusFirst('[data-focusable]');
+    else this.focus.focusByFid('pl:toggle');
     this.#show();
+    if (embed) toast('Haz clic dentro del reproductor para iniciar. Con mando: B para salir.', 6000);
 
-    const Adapter = media.type === 'youtube' ? YouTubeAdapter : media.type === 'audio' ? AudioAdapter : VideoAdapter;
+    const ADAPTERS = { youtube: YouTubeAdapter, audio: AudioAdapter, embed: EmbedAdapter };
+    const Adapter = ADAPTERS[media.type] ?? VideoAdapter;
     const adapter = new Adapter(this.el.querySelector('[data-host]'), media, {
       onState: (state) => this.#onState(state),
       onError: (message) => this.#fail(message),
@@ -282,9 +363,11 @@ export class Player {
     this.adapter = null;
     if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
     this.objectUrl = null;
+    this.episodes = null;
+    this.media = null;
     this.isOpen = false;
-    document.body.classList.remove('player-open');
-    this.el.classList.remove('is-audio');
+    document.body.classList.remove('player-open', 'player-embed');
+    this.el.classList.remove('is-audio', 'is-embed');
     this.el.hidden = true;
     this.el.innerHTML = '';
     this.focus.popScope();
@@ -332,6 +415,23 @@ export class Player {
     const playing = state === 1 || state === 3;
     this.#setBtn('toggle', playing ? 'pause' : 'playsolid', playing ? 'Pausa' : 'Reproducir');
     if (!playing) this.#show();
+    // Al terminar un capítulo (que no sea una lista de YouTube) pasa al siguiente.
+    const eps = this.episodes;
+    if (state === 0 && eps && !this.media?.listId && eps.list[eps.index + 1]) this.#goEpisode(1);
+  }
+
+  /** Cierra este capítulo y abre el anterior (-1) o el siguiente (+1) de la serie. */
+  #goEpisode(delta) {
+    const eps = this.episodes;
+    if (!eps) return;
+    const target = eps.list[eps.index + delta];
+    if (!target) {
+      toast(delta > 0 ? 'Es el último capítulo.' : 'Es el primer capítulo.');
+      return;
+    }
+    const returnFid = this.returnFid;
+    this.close({ restore: false });
+    eps.onGo(target, { returnFid });
   }
 
   #fail(message) {
@@ -364,8 +464,22 @@ export class Player {
       case 'pl-toggle': return a?.toggle();
       case 'pl-back': return a?.seek(-10);
       case 'pl-fwd': return a?.seek(10);
-      case 'pl-prev': return a?.prev();
-      case 'pl-next': return a?.next();
+      case 'pl-prev': return this.episodes ? this.#goEpisode(-1) : a?.prev();
+      case 'pl-next': return this.episodes ? this.#goEpisode(1) : a?.next();
+      case 'pl-tab':
+        if (this.media?.src) window.open(this.media.src, '_blank', 'noopener');
+        return undefined;
+      case 'pl-compat': {
+        const compat = a?.toggleCompat?.();
+        this.#setBtn('compat', 'reset', compat ? 'Modo seguro' : 'Modo compatible');
+        toast(
+          compat
+            ? 'Modo compatible: el reproductor se recargó sin restricciones. Úsalo solo si confías en ese sitio.'
+            : 'Modo seguro: se bloquean ventanas emergentes y redirecciones.',
+          4500,
+        );
+        return undefined;
+      }
       case 'pl-mute': return a?.toggleMute();
       case 'pl-full': return this.#toggleFullscreen();
       case 'pl-close': return this.close();
