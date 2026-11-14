@@ -1,0 +1,14 @@
+# Contraseñas y dependencias
+.env
+node_modules/
+
+# Juegos / ROMs: tienen derechos de autor, no se suben al repositorio
+JUEGOS/
+*.smc
+*.sfc
+*.fig
+*.swc
+*.gd3
+*.gd7
+*.dx2
+*.bsx

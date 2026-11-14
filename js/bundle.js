@@ -1363,6 +1363,154 @@ async function deleteBackground(id) {
 }
     Object.assign(exports, { customValue, customIdFromValue, addBackground, listBackgrounds, getBackground, deleteBackground });
   };
+  __modules["js/api.js"] = function (module, exports, __require) {
+/**
+ * Cliente de la API del catálogo (servidor Node + MySQL, ver server/).
+ *
+ * Si no hay servidor (python -m http.server, doble clic con file://, sin red),
+ * `api.online` es false y WebBox OS sigue funcionando con el almacenamiento
+ * local del navegador, igual que antes. Nada se rompe.
+ *
+ * Leer el catálogo es público. Agregar o eliminar exige la clave de
+ * administrador (ADMIN_KEY del .env), que se guarda solo en este navegador.
+ */
+const { storage } = __require("js/core/storage.js");
+
+const KEY_NAME = 'serverAdminKey';
+const TIMEOUT_MS = 5000;
+
+class ApiClient {
+  constructor() {
+    this.state = 'unknown'; // 'unknown' | 'online' | 'offline'
+    this.store = null; // 'mysql' | 'memory'
+    this.items = [];
+    this.loadPromise = null;
+  }
+
+  get online() {
+    return this.state === 'online';
+  }
+
+  getKey() {
+    return storage.get(KEY_NAME, '') || '';
+  }
+
+  hasKey() {
+    return this.getKey() !== '';
+  }
+
+  setKey(key) {
+    const clean = String(key ?? '').trim();
+    if (clean) storage.set(KEY_NAME, clean);
+    else storage.remove(KEY_NAME);
+  }
+
+  clearKey() {
+    storage.remove(KEY_NAME);
+  }
+
+  /** Nunca lanza: devuelve { ok, status, data }. status 0 = sin conexión. */
+  async #request(method, path, { body, auth = false } = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const headers = {};
+      if (body !== undefined) headers['Content-Type'] = 'application/json';
+      if (auth) headers['X-Admin-Key'] = this.getKey();
+      const res = await fetch(path, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      let data = null;
+      if (res.status !== 204) {
+        try {
+          data = await res.json();
+        } catch {
+          data = null;
+        }
+      }
+      return { ok: res.ok, status: res.status, data };
+    } catch {
+      return { ok: false, status: 0, data: null };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** ¿Hay un servidor de WebBox OS respondiendo? */
+  async check() {
+    const r = await this.#request('GET', 'api/health');
+    if (r.ok && r.data && r.data.ok === true) {
+      this.state = 'online';
+      this.store = r.data.store || null;
+    } else {
+      this.state = 'offline';
+      this.store = null;
+    }
+    return this.online;
+  }
+
+  /**
+   * Descarga todo el catálogo en UNA petición compartida por las tres
+   * pantallas. Devuelve la lista, o null si no hay servidor.
+   */
+  loadAll(force = false) {
+    if (!this.loadPromise || force) {
+      this.loadPromise = (async () => {
+        if (!(await this.check())) {
+          this.items = [];
+          return null;
+        }
+        const r = await this.#request('GET', 'api/items');
+        if (!r.ok || !r.data || !Array.isArray(r.data.items)) {
+          this.state = 'offline';
+          this.items = [];
+          return null;
+        }
+        this.items = r.data.items;
+        return this.items;
+      })();
+    }
+    return this.loadPromise;
+  }
+
+  /** Cantidad de elementos por tipo (según la última descarga). */
+  counts() {
+    const out = { youtube: 0, music: 0, movies: 0 };
+    for (const item of this.items) {
+      if (item.kind in out) out[item.kind] += 1;
+    }
+    return out;
+  }
+
+  /** @returns {Promise<{ok:true,item:object}|{ok:false,status:number,error?:string}>} */
+  async create(item) {
+    if (!this.hasKey()) return { ok: false, status: 401, error: 'Falta la clave de administrador.' };
+    const r = await this.#request('POST', 'api/items', { body: item, auth: true });
+    if (r.ok && r.data && r.data.item) return { ok: true, item: r.data.item };
+    return { ok: false, status: r.status, error: r.data && r.data.error };
+  }
+
+  async remove(serverId) {
+    if (!this.hasKey()) return { ok: false, status: 401, error: 'Falta la clave de administrador.' };
+    const r = await this.#request('DELETE', `api/items/${encodeURIComponent(serverId)}`, { auth: true });
+    return { ok: r.ok, status: r.status, error: r.data && r.data.error };
+  }
+
+  /** ¿La clave guardada es la correcta? */
+  async checkKey() {
+    if (!this.hasKey()) return false;
+    const r = await this.#request('GET', 'api/auth', { auth: true });
+    return r.ok;
+  }
+}
+
+const api = new ApiClient();
+    Object.assign(exports, { api });
+  };
   __modules["js/settings.js"] = function (module, exports, __require) {
 /**
  * Pantalla de Configuración.
@@ -1380,6 +1528,7 @@ const { icon } = __require("js/icons.js");
 const { BACKGROUNDS } = __require("js/data/apps.js");
 const { listBackgrounds, addBackground, deleteBackground, customValue } = __require("js/backgroundStore.js");
 const { DOUBLE_PRESS_MS } = __require("js/launcher.js");
+const { api } = __require("js/api.js");
 const { esc, toast } = __require("js/ui.js");
 
 const TABS = [
@@ -1389,6 +1538,7 @@ const TABS = [
   { id: 'navigation', label: 'Navegación', icon: 'compass' },
   { id: 'background', label: 'Fondo', icon: 'photo' },
   { id: 'display', label: 'Pantalla', icon: 'sun' },
+  { id: 'server', label: 'Servidor', icon: 'globe' },
 ];
 
 const ACTION_LABELS = {
@@ -1428,11 +1578,12 @@ class SettingsScreen {
    * @param {{root:HTMLElement, focus:import('./core/focus.js').FocusManager,
    *          gamepad:import('./input/gamepad.js').GamepadManager}} opts
    */
-  constructor({ root, focus, gamepad, onBackgroundMenu }) {
+  constructor({ root, focus, gamepad, onBackgroundMenu, server }) {
     this.root = root;
     this.focus = focus;
     this.gamepad = gamepad;
     this.onBackgroundMenu = onBackgroundMenu;
+    this.server = server; // { onSetKey, onRetry, onUpload }
     this.pendingBg = null;
     this.active = 'device';
     this.capturing = null; // acción que se está remapeando
@@ -1552,6 +1703,7 @@ class SettingsScreen {
       navigation: () => this.#navigationHTML(),
       background: () => this.#backgroundHTML(),
       display: () => this.#displayHTML(),
+      server: () => this.#serverHTML(),
     }[this.active];
     this.panelEl.innerHTML = render();
     this.gamepad.setWatching(this.active === 'test');
@@ -1910,6 +2062,60 @@ class SettingsScreen {
         'Vuelve a los valores de fábrica (no borra los recientes)', 'reset')}`;
   }
 
+  // ------------------------------------------------------------- Servidor
+
+  #serverHTML() {
+    const online = api.online;
+    const counts = api.counts();
+    const storeName = { mysql: 'MySQL', memory: 'Memoria (pruebas: se pierde al apagar)' }[api.store] ?? api.store ?? '—';
+    const rows = [
+      ['Servidor', online ? 'Conectado' : 'Sin conexión (modo local)'],
+      ['Base de datos', online ? storeName : '—'],
+      ['En el catálogo', online ? `${counts.youtube} videos · ${counts.music} canciones · ${counts.movies} películas` : '—'],
+      ['Clave de administrador', api.hasKey() ? 'Guardada en este navegador' : 'No guardada (solo lectura)'],
+    ];
+    return `
+      <h2 class="panel-title">Servidor y base de datos</h2>
+      <div class="status-card ${online ? 'on' : 'off'}">
+        <span class="dot"></span>
+        <div><h3>${online ? 'Conectado al catálogo compartido' : 'Sin conexión con el servidor'}</h3>
+        <p>${online
+          ? 'YouTube, Música y Películas muestran lo que hay en la base de datos. Todos ven lo mismo; solo quien tiene la clave agrega o elimina.'
+          : 'Se usa solo el almacenamiento de este navegador. Abre WebBox OS desde el servidor (npm start) para usar la base de datos.'}</p></div>
+      </div>
+      <dl class="info-list" style="margin-bottom:1.2rem">
+        ${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}
+      </dl>
+      ${this.#action('server-key', 'server:key', 'Clave de administrador', 'Necesaria para agregar o eliminar elementos del catálogo compartido', 'plus')}
+      ${api.hasKey() ? this.#action('server-forget', 'server:forget', 'Quitar la clave de este navegador', 'Volverás a ser solo lector', 'trash') : ''}
+      ${this.#action('server-retry', 'server:retry', 'Reintentar conexión', 'Vuelve a consultar el servidor', 'reset')}
+      ${online ? this.#action('server-upload', 'server:upload', 'Subir lo guardado en este navegador', 'Envía al servidor lo que agregaste antes solo aquí (requiere la clave)', 'plus') : ''}`;
+  }
+
+  async #serverRetry() {
+    toast('Consultando el servidor…');
+    await this.server?.onRetry?.();
+    toast(api.online ? 'Conectado al servidor' : 'Sigue sin conexión con el servidor');
+    this.rerender(true);
+  }
+
+  async #serverUpload() {
+    if (!api.hasKey()) {
+      toast('Primero escribe la clave de administrador');
+      return;
+    }
+    toast('Subiendo…');
+    const r = await this.server?.onUpload?.();
+    if (!r) return;
+    const parts = [`Subidos: ${r.sent}`];
+    if (r.existing) parts.push(`${r.existing} ya estaban`);
+    if (r.skipped) parts.push(`${r.skipped} son archivos del equipo (no se suben)`);
+    if (r.failed) parts.push(`${r.failed} con error`);
+    if (r.stopped) parts.push('se detuvo: clave incorrecta o servidor sin clave');
+    toast(parts.join(' · '), 5000);
+    this.rerender(true);
+  }
+
   // ---------------------------------------------------------------- eventos
 
   #onClick(e) {
@@ -1960,6 +2166,20 @@ class SettingsScreen {
         }
         break;
       }
+      case 'server-key':
+        this.server?.onSetKey?.();
+        break;
+      case 'server-forget':
+        api.clearKey();
+        toast('Clave quitada de este navegador');
+        this.rerender(true);
+        break;
+      case 'server-retry':
+        this.#serverRetry();
+        break;
+      case 'server-upload':
+        this.#serverUpload();
+        break;
       case 'fullscreen':
         this.#toggleFullscreen();
         break;
@@ -2124,13 +2344,25 @@ function formatTime(total) {
 const { storage } = __require("js/core/storage.js");
 const { parseMediaUrl, youtubeThumb } = __require("js/core/media.js");
 const { icon } = __require("js/icons.js");
-const { esc } = __require("js/ui.js");
+const { api } = __require("js/api.js");
+const { esc, toast } = __require("js/ui.js");
 
 const PALETTE = [
   ['#7c2d12', '#f59e0b'], ['#1e3a8a', '#7c3aed'], ['#065f46', '#34d399'],
   ['#831843', '#fb7185'], ['#0c4a6e', '#38bdf8'], ['#312e81', '#ec4899'],
   ['#7f1d1d', '#f97316'], ['#134e4a', '#2dd4bf'],
 ];
+
+/** Mensaje cuando el servidor no aceptó lo agregado (queda guardado en el navegador). */
+function serverProblem(status) {
+  if (status === 401) {
+    return 'Guardado solo en este navegador. Para la base de datos compartida hace falta la clave (Configuración > Servidor).';
+  }
+  if (status === 429) return 'Demasiados intentos con clave incorrecta. Guardado solo en este navegador.';
+  if (status === 503) return 'El servidor no tiene clave de administrador. Guardado solo en este navegador.';
+  if (status === 422) return 'El servidor no aceptó este elemento. Guardado solo en este navegador.';
+  return 'Sin conexión con el servidor. Guardado solo en este navegador.';
+}
 
 function hash(text) {
   let h = 0;
@@ -2150,6 +2382,7 @@ class LibraryScreen {
     Object.assign(this, opts);
     this.userItems = this.#loadUser();
     this.hidden = new Set(storage.get(`lib:${this.id}:hidden`, []));
+    this.remoteItems = []; // catálogo compartido (base de datos)
 
     this.root.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]');
@@ -2164,6 +2397,8 @@ class LibraryScreen {
     this.root.addEventListener('error', (e) => {
       if (e.target.tagName === 'IMG') e.target.remove();
     }, true);
+
+    this.sync(); // trae el catálogo de la base de datos (si hay servidor)
   }
 
   // ------------------------------------------------------------------ datos
@@ -2178,12 +2413,15 @@ class LibraryScreen {
     storage.set(`lib:${this.id}:hidden`, [...this.hidden]);
   }
 
-  /** Predeterminados (no ocultos) + agregados por el usuario. */
+  /** Predeterminados (no ocultos) + catálogo compartido + agregados en este navegador. */
   items() {
     const defaults = this.defaults
       .map((d, i) => ({ ...d, id: d.id ?? `def:${i}`, builtin: true }))
       .filter((d) => d.title && d.url && !this.hidden.has(d.id));
-    return [...defaults, ...this.userItems].map((i) => ({
+    // Si una copia local ya está enlazada con su fila del servidor, se muestra solo la local.
+    const linked = new Set(this.userItems.filter((i) => i.serverId).map((i) => i.serverId));
+    const remote = this.remoteItems.filter((r) => !linked.has(r.serverId));
+    return [...defaults, ...remote, ...this.userItems].map((i) => ({
       ...i,
       category: (i.category || this.defaultCategory).trim() || this.defaultCategory,
     }));
@@ -2209,6 +2447,7 @@ class LibraryScreen {
     this.userItems.push(item);
     this.#save();
     this.render();
+    this.#pushToServer(item); // en segundo plano; si falla, queda en este navegador
     return item;
   }
 
@@ -2231,11 +2470,133 @@ class LibraryScreen {
   }
 
   remove(id) {
+    const item = this.items().find((i) => i.id === id);
+    const serverId = item?.serverId;
+
+    // Un elemento de la base de datos solo lo puede borrar quien tenga la clave.
+    if (serverId) {
+      if (!api.online) {
+        toast('Sin conexión con el servidor: no se puede eliminar de la base de datos.');
+        return;
+      }
+      if (!api.hasKey()) {
+        toast('Para eliminar de la base de datos compartida hace falta la clave (Configuración > Servidor).');
+        return;
+      }
+    }
+
     const before = this.userItems.length;
+    const wasRemote = this.remoteItems.some((r) => r.id === id);
     this.userItems = this.userItems.filter((i) => i.id !== id);
-    if (this.userItems.length === before) this.hidden.add(id); // era predeterminado
+    this.remoteItems = this.remoteItems.filter((r) => r.id !== id && (!serverId || r.serverId !== serverId));
+    if (this.userItems.length === before && !wasRemote && !serverId) this.hidden.add(id); // era predeterminado
     this.#save();
     this.render();
+    if (serverId) this.#deleteOnServer(item);
+  }
+
+  // ------------------------------------------- base de datos (servidor)
+
+  /**
+   * Descarga el catálogo compartido del servidor. Sin servidor se queda con lo
+   * local, como antes.
+   */
+  async sync({ render = true } = {}) {
+    const all = await api.loadAll();
+    const had = this.remoteItems.length;
+    this.remoteItems = all
+      ? all
+          .filter((i) => i.kind === this.id)
+          .map((i) => ({ ...i, id: `db:${i.id}`, serverId: i.id, remote: true }))
+      : [];
+
+    // Lo agregado antes desde este navegador que ya existe en el servidor se
+    // enlaza con su copia, para que no aparezca dos veces.
+    let linked = false;
+    for (const mine of this.userItems) {
+      if (mine.serverId) continue;
+      const twin = this.remoteItems.find((r) => r.url === mine.url);
+      if (twin) {
+        mine.serverId = twin.serverId;
+        linked = true;
+      }
+    }
+    if (linked) this.#save();
+    if (render && (all || had)) this.render();
+  }
+
+  /** Envía a la base de datos, en segundo plano, lo que se acaba de agregar. */
+  async #pushToServer(item) {
+    if (!api.online) return;
+    const result = await api.create({
+      kind: this.id,
+      title: item.title,
+      url: item.url,
+      category: item.category,
+      image: item.image,
+      artist: item.artist,
+    });
+    if (result.ok) {
+      item.serverId = result.item.id;
+      this.#save();
+      toast('Guardado también en la base de datos');
+    } else if (result.status === 409) {
+      await api.loadAll(true); // ya existía: se enlaza con la copia del servidor
+      await this.sync({ render: false });
+    } else {
+      toast(serverProblem(result.status));
+    }
+  }
+
+  async #deleteOnServer(item) {
+    const result = await api.remove(item.serverId);
+    if (result.ok || result.status === 404) return;
+    // No se pudo borrar en el servidor: se restaura para no mentirle al usuario.
+    if (item.remote) this.remoteItems.push(item);
+    else this.userItems.push(item);
+    this.#save();
+    this.render();
+    toast(
+      result.status === 401
+        ? 'Clave de administrador incorrecta: no se eliminó de la base de datos.'
+        : 'No se pudo eliminar de la base de datos. Se restauró el elemento.',
+    );
+  }
+
+  /**
+   * Sube al servidor lo que solo existía en este navegador.
+   * Los archivos locales (webbox-file://) no se suben: son del equipo del usuario.
+   */
+  async uploadLocal() {
+    const result = { sent: 0, existing: 0, skipped: 0, failed: 0, stopped: null };
+    for (const item of this.userItems) {
+      if (item.serverId) continue;
+      if (item.fileHandleKey || !item.url) {
+        result.skipped += 1;
+        continue;
+      }
+      const r = await api.create({
+        kind: this.id,
+        title: item.title,
+        url: item.url,
+        category: item.category,
+        image: item.image,
+        artist: item.artist,
+      });
+      if (r.ok) {
+        item.serverId = r.item.id;
+        result.sent += 1;
+      } else if (r.status === 409) {
+        result.existing += 1;
+      } else if (r.status === 401 || r.status === 429 || r.status === 503) {
+        result.stopped = r.status;
+        break;
+      } else {
+        result.failed += 1;
+      }
+    }
+    this.#save();
+    return result;
   }
 
   fid(id) {
@@ -2727,7 +3088,7 @@ class Dialog {
   }
 
   /**
-   * @param {{title:string, hint?:string, fields:{key:string,label:string,placeholder?:string,value?:string}[],
+   * @param {{title:string, hint?:string, fields:{key:string,label:string,type?:'text'|'password',placeholder?:string,value?:string}[],
    *   submitLabel?:string, onSubmit:(values:object)=>Promise<string|null>|string|null}} spec
    */
   open(spec) {
@@ -2740,7 +3101,7 @@ class Dialog {
         <div class="field" role="button" tabindex="-1" data-focusable data-zone="dialog"
              data-fid="dlg:${f.key}" data-act="dlg-field">
           <label>${esc(f.label)}</label>
-          <input type="text" name="${esc(f.key)}" value="${esc(f.value ?? '')}"
+          <input type="${f.type === 'password' ? 'password' : 'text'}" name="${esc(f.key)}" value="${esc(f.value ?? '')}"
                  placeholder="${esc(f.placeholder ?? '')}" autocomplete="off" autocapitalize="off" spellcheck="false">
         </div>`,
       )
@@ -4828,6 +5189,7 @@ const { KeyboardInput } = __require("js/input/keyboard.js");
 const { Launcher } = __require("js/launcher.js");
 const { SettingsScreen } = __require("js/settings.js");
 const { LibraryScreen } = __require("js/library.js");
+const { api } = __require("js/api.js");
 const { Player } = __require("js/player.js");
 const { Dialog } = __require("js/dialog.js");
 const { FilesScreen } = __require("js/files.js");
@@ -4973,6 +5335,11 @@ class WebBoxOS {
       focus: this.focus,
       gamepad: this.gamepad,
       onBackgroundMenu: (spec) => this.cardMenu.open(spec),
+      server: {
+        onSetKey: () => this.#openServerKeyDialog(),
+        onRetry: () => this.#refreshServer(),
+        onUpload: () => this.#uploadLocalItems(),
+      },
     });
   }
 
@@ -5398,6 +5765,52 @@ class WebBoxOS {
     // El foco vuelve a la tarjeta nueva cuando el formulario se cierre.
     this.dialog.returnFid = lib.fid(result.id);
     return null;
+  }
+
+  // ---------------------------------------------------- servidor / base de datos
+
+  /** Pide la clave de administrador y la comprueba contra el servidor. */
+  #openServerKeyDialog() {
+    this.dialog.open({
+      title: 'Clave de administrador',
+      hint: 'La que escribiste en ADMIN_KEY (archivo .env del servidor). Se guarda solo en este navegador.',
+      fields: [{ key: 'key', label: 'Clave', type: 'password', placeholder: 'ADMIN_KEY' }],
+      submitLabel: 'Guardar',
+      onSubmit: async (values) => {
+        if (!values.key) return 'Escribe la clave.';
+        if (!api.online) return 'No hay conexión con el servidor.';
+        const previous = api.getKey();
+        api.setKey(values.key);
+        if (!(await api.checkKey())) {
+          api.setKey(previous);
+          return 'Clave incorrecta (o demasiados intentos: espera un minuto).';
+        }
+        toast('Clave correcta. Ya puedes agregar y eliminar.');
+        this.settings.rerender(true);
+        return null;
+      },
+    });
+  }
+
+  /** Vuelve a consultar el servidor y refresca YouTube, Música y Películas. */
+  async #refreshServer() {
+    await api.loadAll(true);
+    await Promise.all([...Object.values(this.libraries), this.musicLib].map((lib) => lib.sync()));
+  }
+
+  /** Sube al servidor lo que estaba guardado solo en este navegador. */
+  async #uploadLocalItems() {
+    const total = { sent: 0, existing: 0, skipped: 0, failed: 0, stopped: null };
+    for (const lib of [...Object.values(this.libraries), this.musicLib]) {
+      const r = await lib.uploadLocal();
+      for (const key of ['sent', 'existing', 'skipped', 'failed']) total[key] += r[key];
+      if (r.stopped) {
+        total.stopped = r.stopped;
+        break;
+      }
+    }
+    await this.#refreshServer();
+    return total;
   }
 
   #confirmDeleteSong(item) {

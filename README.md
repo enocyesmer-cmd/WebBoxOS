@@ -182,3 +182,26 @@ campo abre el teclado del sistema).
   `assets/movies/mi-pelicula.mp4`) y referencias locales agregadas desde Archivos.
 - Lo agregado desde la interfaz queda guardado en el navegador. Para dejar contenido fijo en el
   código, edita `js/data/library.js`. "Eliminar" está dentro del reproductor.
+
+## Base de datos MySQL y servidor
+
+El catálogo (videos de YouTube, música y películas) puede vivir en MySQL y ser **común para todos los usuarios**: todos lo leen; solo quien tenga la clave de administrador agrega o elimina. Sin servidor, la web sigue funcionando como antes con el almacenamiento del navegador.
+
+### Puesta en marcha
+1. Instala **Node.js 18+** y **MySQL 8** (o MariaDB 10.5+).
+2. Crea la base y la tabla: `mysql -u root -p < database/schema.sql`
+3. Edita la clave en `database/crear_usuario.sql` (`CAMBIA_ESTA_CLAVE`) y ejecútalo: `mysql -u root -p < database/crear_usuario.sql` (usuario `webbox`, solo SELECT/INSERT/DELETE).
+4. Copia `.env.example` a `.env` y completa `ADMIN_KEY` (clave larga) y `DB_PASSWORD` (la del paso 3).
+5. `npm install` y luego `npm start`. Abre `http://localhost:8080`.
+6. En la web: **Configuración > Servidor > Clave de administrador**. Ahí también puedes subir lo que ya tenías guardado en el navegador.
+
+Otros usuarios en tu red entran con la dirección LAN que imprime el servidor. Para internet, ponlo detrás de HTTPS (la clave viaja en una cabecera).
+
+### API
+`GET /api/health`, `GET /api/items[?kind=youtube|music|movies]`, `GET /api/auth`, `POST /api/items`, `DELETE /api/items/:id` (las dos últimas con cabecera `X-Admin-Key`).
+
+### Juegos (JUEGOS/)
+La base de datos guarda solo **enlaces y metadatos**, nunca archivos de video, audio ni ROMs. El servidor **no sirve** la carpeta `JUEGOS/` (ni `server/`, `database/`, `.env`...): solo `index.html`, `manifest.json`, `css`, `js` y `assets`. Alojar ROMs de juegos comerciales para que otros los descarguen infringe derechos de autor, así que cada usuario juega cargando su propio archivo desde su dispositivo. `.gitignore` excluye `JUEGOS/` y las extensiones de ROM.
+
+### Pruebas
+`npm test` (lógica + API con almacén en memoria). `python3 tools/build.py` regenera `js/bundle.js`.

@@ -12,6 +12,7 @@ import { KeyboardInput } from './input/keyboard.js';
 import { Launcher } from './launcher.js';
 import { SettingsScreen } from './settings.js';
 import { LibraryScreen } from './library.js';
+import { api } from './api.js';
 import { Player } from './player.js';
 import { Dialog } from './dialog.js';
 import { FilesScreen } from './files.js';
@@ -157,6 +158,11 @@ class WebBoxOS {
       focus: this.focus,
       gamepad: this.gamepad,
       onBackgroundMenu: (spec) => this.cardMenu.open(spec),
+      server: {
+        onSetKey: () => this.#openServerKeyDialog(),
+        onRetry: () => this.#refreshServer(),
+        onUpload: () => this.#uploadLocalItems(),
+      },
     });
   }
 
@@ -582,6 +588,52 @@ class WebBoxOS {
     // El foco vuelve a la tarjeta nueva cuando el formulario se cierre.
     this.dialog.returnFid = lib.fid(result.id);
     return null;
+  }
+
+  // ---------------------------------------------------- servidor / base de datos
+
+  /** Pide la clave de administrador y la comprueba contra el servidor. */
+  #openServerKeyDialog() {
+    this.dialog.open({
+      title: 'Clave de administrador',
+      hint: 'La que escribiste en ADMIN_KEY (archivo .env del servidor). Se guarda solo en este navegador.',
+      fields: [{ key: 'key', label: 'Clave', type: 'password', placeholder: 'ADMIN_KEY' }],
+      submitLabel: 'Guardar',
+      onSubmit: async (values) => {
+        if (!values.key) return 'Escribe la clave.';
+        if (!api.online) return 'No hay conexión con el servidor.';
+        const previous = api.getKey();
+        api.setKey(values.key);
+        if (!(await api.checkKey())) {
+          api.setKey(previous);
+          return 'Clave incorrecta (o demasiados intentos: espera un minuto).';
+        }
+        toast('Clave correcta. Ya puedes agregar y eliminar.');
+        this.settings.rerender(true);
+        return null;
+      },
+    });
+  }
+
+  /** Vuelve a consultar el servidor y refresca YouTube, Música y Películas. */
+  async #refreshServer() {
+    await api.loadAll(true);
+    await Promise.all([...Object.values(this.libraries), this.musicLib].map((lib) => lib.sync()));
+  }
+
+  /** Sube al servidor lo que estaba guardado solo en este navegador. */
+  async #uploadLocalItems() {
+    const total = { sent: 0, existing: 0, skipped: 0, failed: 0, stopped: null };
+    for (const lib of [...Object.values(this.libraries), this.musicLib]) {
+      const r = await lib.uploadLocal();
+      for (const key of ['sent', 'existing', 'skipped', 'failed']) total[key] += r[key];
+      if (r.stopped) {
+        total.stopped = r.stopped;
+        break;
+      }
+    }
+    await this.#refreshServer();
+    return total;
   }
 
   #confirmDeleteSong(item) {

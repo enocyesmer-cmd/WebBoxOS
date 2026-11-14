@@ -29,7 +29,7 @@ export class Dialog {
   }
 
   /**
-   * @param {{title:string, hint?:string, fields:{key:string,label:string,placeholder?:string,value?:string}[],
+   * @param {{title:string, hint?:string, fields:{key:string,label:string,type?:'text'|'password',placeholder?:string,value?:string}[],
    *   submitLabel?:string, onSubmit:(values:object)=>Promise<string|null>|string|null}} spec
    */
   open(spec) {
@@ -42,7 +42,7 @@ export class Dialog {
         <div class="field" role="button" tabindex="-1" data-focusable data-zone="dialog"
              data-fid="dlg:${f.key}" data-act="dlg-field">
           <label>${esc(f.label)}</label>
-          <input type="text" name="${esc(f.key)}" value="${esc(f.value ?? '')}"
+          <input type="${f.type === 'password' ? 'password' : 'text'}" name="${esc(f.key)}" value="${esc(f.value ?? '')}"
                  placeholder="${esc(f.placeholder ?? '')}" autocomplete="off" autocapitalize="off" spellcheck="false">
         </div>`,
       )

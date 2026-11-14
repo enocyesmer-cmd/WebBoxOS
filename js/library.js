@@ -7,13 +7,25 @@
 import { storage } from './core/storage.js';
 import { parseMediaUrl, youtubeThumb } from './core/media.js';
 import { icon } from './icons.js';
-import { esc } from './ui.js';
+import { api } from './api.js';
+import { esc, toast } from './ui.js';
 
 const PALETTE = [
   ['#7c2d12', '#f59e0b'], ['#1e3a8a', '#7c3aed'], ['#065f46', '#34d399'],
   ['#831843', '#fb7185'], ['#0c4a6e', '#38bdf8'], ['#312e81', '#ec4899'],
   ['#7f1d1d', '#f97316'], ['#134e4a', '#2dd4bf'],
 ];
+
+/** Mensaje cuando el servidor no aceptó lo agregado (queda guardado en el navegador). */
+function serverProblem(status) {
+  if (status === 401) {
+    return 'Guardado solo en este navegador. Para la base de datos compartida hace falta la clave (Configuración > Servidor).';
+  }
+  if (status === 429) return 'Demasiados intentos con clave incorrecta. Guardado solo en este navegador.';
+  if (status === 503) return 'El servidor no tiene clave de administrador. Guardado solo en este navegador.';
+  if (status === 422) return 'El servidor no aceptó este elemento. Guardado solo en este navegador.';
+  return 'Sin conexión con el servidor. Guardado solo en este navegador.';
+}
 
 function hash(text) {
   let h = 0;
@@ -33,6 +45,7 @@ export class LibraryScreen {
     Object.assign(this, opts);
     this.userItems = this.#loadUser();
     this.hidden = new Set(storage.get(`lib:${this.id}:hidden`, []));
+    this.remoteItems = []; // catálogo compartido (base de datos)
 
     this.root.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]');
@@ -47,6 +60,8 @@ export class LibraryScreen {
     this.root.addEventListener('error', (e) => {
       if (e.target.tagName === 'IMG') e.target.remove();
     }, true);
+
+    this.sync(); // trae el catálogo de la base de datos (si hay servidor)
   }
 
   // ------------------------------------------------------------------ datos
@@ -61,12 +76,15 @@ export class LibraryScreen {
     storage.set(`lib:${this.id}:hidden`, [...this.hidden]);
   }
 
-  /** Predeterminados (no ocultos) + agregados por el usuario. */
+  /** Predeterminados (no ocultos) + catálogo compartido + agregados en este navegador. */
   items() {
     const defaults = this.defaults
       .map((d, i) => ({ ...d, id: d.id ?? `def:${i}`, builtin: true }))
       .filter((d) => d.title && d.url && !this.hidden.has(d.id));
-    return [...defaults, ...this.userItems].map((i) => ({
+    // Si una copia local ya está enlazada con su fila del servidor, se muestra solo la local.
+    const linked = new Set(this.userItems.filter((i) => i.serverId).map((i) => i.serverId));
+    const remote = this.remoteItems.filter((r) => !linked.has(r.serverId));
+    return [...defaults, ...remote, ...this.userItems].map((i) => ({
       ...i,
       category: (i.category || this.defaultCategory).trim() || this.defaultCategory,
     }));
@@ -92,6 +110,7 @@ export class LibraryScreen {
     this.userItems.push(item);
     this.#save();
     this.render();
+    this.#pushToServer(item); // en segundo plano; si falla, queda en este navegador
     return item;
   }
 
@@ -114,11 +133,133 @@ export class LibraryScreen {
   }
 
   remove(id) {
+    const item = this.items().find((i) => i.id === id);
+    const serverId = item?.serverId;
+
+    // Un elemento de la base de datos solo lo puede borrar quien tenga la clave.
+    if (serverId) {
+      if (!api.online) {
+        toast('Sin conexión con el servidor: no se puede eliminar de la base de datos.');
+        return;
+      }
+      if (!api.hasKey()) {
+        toast('Para eliminar de la base de datos compartida hace falta la clave (Configuración > Servidor).');
+        return;
+      }
+    }
+
     const before = this.userItems.length;
+    const wasRemote = this.remoteItems.some((r) => r.id === id);
     this.userItems = this.userItems.filter((i) => i.id !== id);
-    if (this.userItems.length === before) this.hidden.add(id); // era predeterminado
+    this.remoteItems = this.remoteItems.filter((r) => r.id !== id && (!serverId || r.serverId !== serverId));
+    if (this.userItems.length === before && !wasRemote && !serverId) this.hidden.add(id); // era predeterminado
     this.#save();
     this.render();
+    if (serverId) this.#deleteOnServer(item);
+  }
+
+  // ------------------------------------------- base de datos (servidor)
+
+  /**
+   * Descarga el catálogo compartido del servidor. Sin servidor se queda con lo
+   * local, como antes.
+   */
+  async sync({ render = true } = {}) {
+    const all = await api.loadAll();
+    const had = this.remoteItems.length;
+    this.remoteItems = all
+      ? all
+          .filter((i) => i.kind === this.id)
+          .map((i) => ({ ...i, id: `db:${i.id}`, serverId: i.id, remote: true }))
+      : [];
+
+    // Lo agregado antes desde este navegador que ya existe en el servidor se
+    // enlaza con su copia, para que no aparezca dos veces.
+    let linked = false;
+    for (const mine of this.userItems) {
+      if (mine.serverId) continue;
+      const twin = this.remoteItems.find((r) => r.url === mine.url);
+      if (twin) {
+        mine.serverId = twin.serverId;
+        linked = true;
+      }
+    }
+    if (linked) this.#save();
+    if (render && (all || had)) this.render();
+  }
+
+  /** Envía a la base de datos, en segundo plano, lo que se acaba de agregar. */
+  async #pushToServer(item) {
+    if (!api.online) return;
+    const result = await api.create({
+      kind: this.id,
+      title: item.title,
+      url: item.url,
+      category: item.category,
+      image: item.image,
+      artist: item.artist,
+    });
+    if (result.ok) {
+      item.serverId = result.item.id;
+      this.#save();
+      toast('Guardado también en la base de datos');
+    } else if (result.status === 409) {
+      await api.loadAll(true); // ya existía: se enlaza con la copia del servidor
+      await this.sync({ render: false });
+    } else {
+      toast(serverProblem(result.status));
+    }
+  }
+
+  async #deleteOnServer(item) {
+    const result = await api.remove(item.serverId);
+    if (result.ok || result.status === 404) return;
+    // No se pudo borrar en el servidor: se restaura para no mentirle al usuario.
+    if (item.remote) this.remoteItems.push(item);
+    else this.userItems.push(item);
+    this.#save();
+    this.render();
+    toast(
+      result.status === 401
+        ? 'Clave de administrador incorrecta: no se eliminó de la base de datos.'
+        : 'No se pudo eliminar de la base de datos. Se restauró el elemento.',
+    );
+  }
+
+  /**
+   * Sube al servidor lo que solo existía en este navegador.
+   * Los archivos locales (webbox-file://) no se suben: son del equipo del usuario.
+   */
+  async uploadLocal() {
+    const result = { sent: 0, existing: 0, skipped: 0, failed: 0, stopped: null };
+    for (const item of this.userItems) {
+      if (item.serverId) continue;
+      if (item.fileHandleKey || !item.url) {
+        result.skipped += 1;
+        continue;
+      }
+      const r = await api.create({
+        kind: this.id,
+        title: item.title,
+        url: item.url,
+        category: item.category,
+        image: item.image,
+        artist: item.artist,
+      });
+      if (r.ok) {
+        item.serverId = r.item.id;
+        result.sent += 1;
+      } else if (r.status === 409) {
+        result.existing += 1;
+      } else if (r.status === 401 || r.status === 429 || r.status === 503) {
+        result.stopped = r.status;
+        break;
+      } else {
+        result.failed += 1;
+      }
+    }
+    this.#save();
+    return result;
   }
 
   fid(id) {

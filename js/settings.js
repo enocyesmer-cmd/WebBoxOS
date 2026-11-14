@@ -14,6 +14,7 @@ import { icon } from './icons.js';
 import { BACKGROUNDS } from './data/apps.js';
 import { listBackgrounds, addBackground, deleteBackground, customValue } from './backgroundStore.js';
 import { DOUBLE_PRESS_MS } from './launcher.js';
+import { api } from './api.js';
 import { esc, toast } from './ui.js';
 
 const TABS = [
@@ -23,6 +24,7 @@ const TABS = [
   { id: 'navigation', label: 'Navegación', icon: 'compass' },
   { id: 'background', label: 'Fondo', icon: 'photo' },
   { id: 'display', label: 'Pantalla', icon: 'sun' },
+  { id: 'server', label: 'Servidor', icon: 'globe' },
 ];
 
 const ACTION_LABELS = {
@@ -62,11 +64,12 @@ export class SettingsScreen {
    * @param {{root:HTMLElement, focus:import('./core/focus.js').FocusManager,
    *          gamepad:import('./input/gamepad.js').GamepadManager}} opts
    */
-  constructor({ root, focus, gamepad, onBackgroundMenu }) {
+  constructor({ root, focus, gamepad, onBackgroundMenu, server }) {
     this.root = root;
     this.focus = focus;
     this.gamepad = gamepad;
     this.onBackgroundMenu = onBackgroundMenu;
+    this.server = server; // { onSetKey, onRetry, onUpload }
     this.pendingBg = null;
     this.active = 'device';
     this.capturing = null; // acción que se está remapeando
@@ -186,6 +189,7 @@ export class SettingsScreen {
       navigation: () => this.#navigationHTML(),
       background: () => this.#backgroundHTML(),
       display: () => this.#displayHTML(),
+      server: () => this.#serverHTML(),
     }[this.active];
     this.panelEl.innerHTML = render();
     this.gamepad.setWatching(this.active === 'test');
@@ -544,6 +548,60 @@ export class SettingsScreen {
         'Vuelve a los valores de fábrica (no borra los recientes)', 'reset')}`;
   }
 
+  // ------------------------------------------------------------- Servidor
+
+  #serverHTML() {
+    const online = api.online;
+    const counts = api.counts();
+    const storeName = { mysql: 'MySQL', memory: 'Memoria (pruebas: se pierde al apagar)' }[api.store] ?? api.store ?? '—';
+    const rows = [
+      ['Servidor', online ? 'Conectado' : 'Sin conexión (modo local)'],
+      ['Base de datos', online ? storeName : '—'],
+      ['En el catálogo', online ? `${counts.youtube} videos · ${counts.music} canciones · ${counts.movies} películas` : '—'],
+      ['Clave de administrador', api.hasKey() ? 'Guardada en este navegador' : 'No guardada (solo lectura)'],
+    ];
+    return `
+      <h2 class="panel-title">Servidor y base de datos</h2>
+      <div class="status-card ${online ? 'on' : 'off'}">
+        <span class="dot"></span>
+        <div><h3>${online ? 'Conectado al catálogo compartido' : 'Sin conexión con el servidor'}</h3>
+        <p>${online
+          ? 'YouTube, Música y Películas muestran lo que hay en la base de datos. Todos ven lo mismo; solo quien tiene la clave agrega o elimina.'
+          : 'Se usa solo el almacenamiento de este navegador. Abre WebBox OS desde el servidor (npm start) para usar la base de datos.'}</p></div>
+      </div>
+      <dl class="info-list" style="margin-bottom:1.2rem">
+        ${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}
+      </dl>
+      ${this.#action('server-key', 'server:key', 'Clave de administrador', 'Necesaria para agregar o eliminar elementos del catálogo compartido', 'plus')}
+      ${api.hasKey() ? this.#action('server-forget', 'server:forget', 'Quitar la clave de este navegador', 'Volverás a ser solo lector', 'trash') : ''}
+      ${this.#action('server-retry', 'server:retry', 'Reintentar conexión', 'Vuelve a consultar el servidor', 'reset')}
+      ${online ? this.#action('server-upload', 'server:upload', 'Subir lo guardado en este navegador', 'Envía al servidor lo que agregaste antes solo aquí (requiere la clave)', 'plus') : ''}`;
+  }
+
+  async #serverRetry() {
+    toast('Consultando el servidor…');
+    await this.server?.onRetry?.();
+    toast(api.online ? 'Conectado al servidor' : 'Sigue sin conexión con el servidor');
+    this.rerender(true);
+  }
+
+  async #serverUpload() {
+    if (!api.hasKey()) {
+      toast('Primero escribe la clave de administrador');
+      return;
+    }
+    toast('Subiendo…');
+    const r = await this.server?.onUpload?.();
+    if (!r) return;
+    const parts = [`Subidos: ${r.sent}`];
+    if (r.existing) parts.push(`${r.existing} ya estaban`);
+    if (r.skipped) parts.push(`${r.skipped} son archivos del equipo (no se suben)`);
+    if (r.failed) parts.push(`${r.failed} con error`);
+    if (r.stopped) parts.push('se detuvo: clave incorrecta o servidor sin clave');
+    toast(parts.join(' · '), 5000);
+    this.rerender(true);
+  }
+
   // ---------------------------------------------------------------- eventos
 
   #onClick(e) {
@@ -594,6 +652,20 @@ export class SettingsScreen {
         }
         break;
       }
+      case 'server-key':
+        this.server?.onSetKey?.();
+        break;
+      case 'server-forget':
+        api.clearKey();
+        toast('Clave quitada de este navegador');
+        this.rerender(true);
+        break;
+      case 'server-retry':
+        this.#serverRetry();
+        break;
+      case 'server-upload':
+        this.#serverUpload();
+        break;
       case 'fullscreen':
         this.#toggleFullscreen();
         break;
