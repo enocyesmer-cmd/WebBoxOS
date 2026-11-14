@@ -183,6 +183,22 @@ campo abre el teclado del sistema).
 - Lo agregado desde la interfaz queda guardado en el navegador. Para dejar contenido fijo en el
   código, edita `js/data/library.js`. "Eliminar" está dentro del reproductor.
 
+## Base de datos SQLite (la más fácil, sin instalar nada)
+
+Por defecto el servidor usa el archivo `database/webbox.sqlite`, que se abre con **DB Browser for SQLite** (Archivo > Abrir base de datos). Requiere **Node.js 22.5 o superior**; no hace falta `npm install`. Si prefieres MySQL, pon `STORE=mysql` en `.env` y sigue la sección de abajo.
+
+```
+npm start            # crea la base sola la primera vez y levanta la web en :8080
+npm run sincronizar  # mezcla database/catalogo.json con tu base y vuelve a guardarlo
+```
+
+### Sincronizar con GitHub
+El archivo `.sqlite` es binario y **no se sube a git** (da conflictos). Lo que se sube es `database/catalogo.json`, un texto con tu catálogo:
+1. Cuando agregues cosas: `npm run db:exportar`, luego `git add database/catalogo.json`, `git commit`, `git push`.
+2. En otro equipo (o tras `git pull`): `npm run sincronizar`. Solo **agrega** lo que falte, nunca borra.
+3. Si borras algo a propósito, bórralo también en `catalogo.json` o volverá a aparecer al sincronizar.
+4. Tras un `git pull`, reinicia `npm start` si estaba abierto.
+
 ## Base de datos MySQL y servidor
 
 El catálogo (videos de YouTube, música y películas) puede vivir en MySQL y ser **común para todos los usuarios**: todos lo leen; solo quien tenga la clave de administrador agrega o elimina. Sin servidor, la web sigue funcionando como antes con el almacenamiento del navegador.

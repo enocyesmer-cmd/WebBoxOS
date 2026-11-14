@@ -11,6 +11,7 @@ import { loadEnv } from './env.js';
 import { createApp } from './app.js';
 import { createMysqlStore } from './store/mysql.js';
 import { createMemoryStore } from './store/memory.js';
+import { createSqliteStore } from './store/sqlite.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const env = loadEnv(ROOT);
@@ -34,10 +35,13 @@ if (!ADMIN_KEY) {
 
 let store;
 try {
-  if ((env.STORE || 'mysql').toLowerCase() === 'memory') {
+  const kind = (env.STORE || 'sqlite').toLowerCase();
+  if (kind === 'sqlite') {
+    store = await createSqliteStore(resolve(ROOT, env.SQLITE_FILE || 'database/webbox.sqlite'));
+  } else if (kind === 'memory') {
     store = createMemoryStore();
     console.warn('⚠ STORE=memory: los datos se pierden al apagar el servidor (solo para pruebas).');
-  } else {
+  } else if (kind === 'mysql') {
     store = await createMysqlStore({
       host: env.DB_HOST || '127.0.0.1',
       port: Number(env.DB_PORT) || 3306,
@@ -45,12 +49,14 @@ try {
       password: env.DB_PASSWORD || '',
       database: env.DB_NAME || 'webbox',
     });
+  } else {
+    throw new Error(`STORE="${kind}" no existe. Usa sqlite, mysql o memory.`);
   }
 } catch (err) {
   fail(
-    `No se pudo conectar a MySQL: ${err.message}\n` +
-      '  Revisa DB_HOST, DB_USER, DB_PASSWORD y DB_NAME en .env, que MySQL esté encendido\n' +
-      '  y que hayas ejecutado database/schema.sql.',
+    `No se pudo abrir la base de datos: ${err.message}\n` +
+      '  Con SQLite no hace falta configurar nada. Con STORE=mysql revisa DB_* en .env,\n' +
+      '  que MySQL esté encendido y que hayas ejecutado database/schema.sql.',
   );
 }
 

@@ -12,3 +12,8 @@ JUEGOS/
 *.gd7
 *.dx2
 *.bsx
+
+# Base de datos SQLite local (son datos, no código): se comparte con database/catalogo.json
+database/*.sqlite
+database/*.sqlite-wal
+database/*.sqlite-shm

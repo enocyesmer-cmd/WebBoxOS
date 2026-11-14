@@ -1,18 +1,22 @@
 {
   "name": "webbox-os",
   "version": "0.2.0",
-  "description": "WebBox OS: launcher estilo Android TV con catálogo en MySQL",
+  "description": "WebBox OS: launcher estilo Android TV con catálogo en SQLite o MySQL",
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=18"
+    "node": ">=22.5"
   },
   "scripts": {
     "start": "node server/server.js",
     "build": "python3 tools/build.py",
-    "test": "node tests/logica.test.mjs && node tests/api.test.mjs"
+    "test": "node tests/logica.test.mjs && node tests/api.test.mjs",
+    "db:crear": "node tools/db.mjs crear",
+    "db:exportar": "node tools/db.mjs exportar",
+    "db:importar": "node tools/db.mjs importar",
+    "sincronizar": "node tools/db.mjs sincronizar"
   },
-  "dependencies": {
+  "optionalDependencies": {
     "mysql2": "^3.11.0"
   }
 }
