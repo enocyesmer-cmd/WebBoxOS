@@ -189,7 +189,7 @@ export class Launcher {
     return `
       <section class="locations" aria-label="Dónde están tus archivos">
         <h2 class="locations-title"><span class="row-icon">${icon('folder')}</span>Dónde están tus archivos</h2>
-        <p class="locations-sub">Indica la carpeta de tu música, fotos y videos. Al abrir esas aplicaciones, el Gestor de archivos entra directo ahí.</p>
+        <p class="locations-sub">Indica la carpeta de tus fotos y videos. Al abrir esas aplicaciones, el Gestor de archivos entra directo ahí.</p>
         <div class="locations-list">${rows}</div>
       </section>`;
   }

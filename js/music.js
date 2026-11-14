@@ -75,10 +75,14 @@ export class MusicScreen {
         <header class="music-head">
           <div>
             <h1 class="screen-title">Música</h1>
-            <p class="lib-sub">Pega el enlace de YouTube de una canción y escúchala aquí.</p>
+            <p class="lib-sub">Busca la canción en YouTube Music, copia su enlace y pégalo con Agregar.</p>
           </div>
-          <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main" data-mz="add"
-               data-fid="mus:add" data-act="mus-add">${icon('plus')}Agregar</div>
+          <div class="music-head-actions">
+            <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main" data-mz="add"
+                 data-fid="mus:add" data-act="mus-add">${icon('plus')}Agregar</div>
+            <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main" data-mz="add"
+                 data-fid="mus:site" data-act="mus-site">${icon('external')}Buscar en YouTube Music</div>
+          </div>
         </header>
         ${has ? `<div class="music-stage" data-stage>${this.items.map((it, i) => this.#card(it, i)).join('')}</div>` : `
         <div class="lib-empty music-empty"><b>Aún no hay canciones.</b><br>Pulsa <b>Agregar</b> y pega un enlace de YouTube
@@ -356,6 +360,7 @@ export class MusicScreen {
       if (btn.getAttribute('aria-disabled') === 'true') return;
       switch (btn.dataset.act) {
         case 'mus-add': this.onAdd(); break;
+        case 'mus-site': window.open('https://music.youtube.com/', '_blank', 'noopener'); break;
         case 'mus-play': this.toggle(); break;
         case 'mus-prev': this.#skip(-1); break;
         case 'mus-next': this.#skip(1); break;

@@ -38,9 +38,11 @@
   padding-right: 3rem;
 }
 
-.music-head .btn {
-  margin-top: 0.4rem;
+.music-head-actions {
+  display: flex;
+  gap: 0.8rem;
   flex: none;
+  margin-top: 0.4rem;
 }
 
 .music-empty {

@@ -511,7 +511,7 @@ class WebBoxOS {
     }
   }
 
-  /** Abre en el Gestor de archivos la carpeta elegida para música, fotos o videos. */
+  /** Abre en el Gestor de archivos la carpeta elegida para fotos o videos. */
   async #openMediaLocation(key) {
     const label = MEDIA_LOCATIONS.find((l) => l.key === key)?.label ?? key;
     const info = this.mediaFolders[key];

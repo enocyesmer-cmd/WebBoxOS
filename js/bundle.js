@@ -1184,7 +1184,7 @@ class Launcher {
     return `
       <section class="locations" aria-label="Dónde están tus archivos">
         <h2 class="locations-title"><span class="row-icon">${icon('folder')}</span>Dónde están tus archivos</h2>
-        <p class="locations-sub">Indica la carpeta de tu música, fotos y videos. Al abrir esas aplicaciones, el Gestor de archivos entra directo ahí.</p>
+        <p class="locations-sub">Indica la carpeta de tus fotos y videos. Al abrir esas aplicaciones, el Gestor de archivos entra directo ahí.</p>
         <div class="locations-list">${rows}</div>
       </section>`;
   }
@@ -3357,7 +3357,7 @@ class FilesScreen {
     }
   }
 
-  /** Abre una carpeta concreta (por ejemplo, la de música) como raíz del gestor. */
+  /** Abre una carpeta concreta (por ejemplo, la de fotos) como raíz del gestor. */
   async openLocation(root) {
     if (this.loading) return;
     await this.#setRoot(root);
@@ -4316,10 +4316,14 @@ class MusicScreen {
         <header class="music-head">
           <div>
             <h1 class="screen-title">Música</h1>
-            <p class="lib-sub">Pega el enlace de YouTube de una canción y escúchala aquí.</p>
+            <p class="lib-sub">Busca la canción en YouTube Music, copia su enlace y pégalo con Agregar.</p>
           </div>
-          <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main" data-mz="add"
-               data-fid="mus:add" data-act="mus-add">${icon('plus')}Agregar</div>
+          <div class="music-head-actions">
+            <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main" data-mz="add"
+                 data-fid="mus:add" data-act="mus-add">${icon('plus')}Agregar</div>
+            <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main" data-mz="add"
+                 data-fid="mus:site" data-act="mus-site">${icon('external')}Buscar en YouTube Music</div>
+          </div>
         </header>
         ${has ? `<div class="music-stage" data-stage>${this.items.map((it, i) => this.#card(it, i)).join('')}</div>` : `
         <div class="lib-empty music-empty"><b>Aún no hay canciones.</b><br>Pulsa <b>Agregar</b> y pega un enlace de YouTube
@@ -4597,6 +4601,7 @@ class MusicScreen {
       if (btn.getAttribute('aria-disabled') === 'true') return;
       switch (btn.dataset.act) {
         case 'mus-add': this.onAdd(); break;
+        case 'mus-site': window.open('https://music.youtube.com/', '_blank', 'noopener'); break;
         case 'mus-play': this.toggle(); break;
         case 'mus-prev': this.#skip(-1); break;
         case 'mus-next': this.#skip(1); break;
@@ -5322,7 +5327,7 @@ class WebBoxOS {
     }
   }
 
-  /** Abre en el Gestor de archivos la carpeta elegida para música, fotos o videos. */
+  /** Abre en el Gestor de archivos la carpeta elegida para fotos o videos. */
   async #openMediaLocation(key) {
     const label = MEDIA_LOCATIONS.find((l) => l.key === key)?.label ?? key;
     const info = this.mediaFolders[key];

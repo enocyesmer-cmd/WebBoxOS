@@ -166,7 +166,7 @@ export class FilesScreen {
     }
   }
 
-  /** Abre una carpeta concreta (por ejemplo, la de música) como raíz del gestor. */
+  /** Abre una carpeta concreta (por ejemplo, la de fotos) como raíz del gestor. */
   async openLocation(root) {
     if (this.loading) return;
     await this.#setRoot(root);
