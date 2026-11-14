@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="css/navigation.css">
   <link rel="stylesheet" href="css/settings.css">
   <link rel="stylesheet" href="css/media.css">
+  <link rel="stylesheet" href="css/files.css">
 </head>
 <body data-motion="full">
   <div id="bg" aria-hidden="true"></div>
@@ -71,6 +72,7 @@
         <section id="screen-apps" class="screen screen--scroll" aria-label="Aplicaciones" hidden></section>
         <section id="screen-youtube" class="screen screen--scroll" aria-label="YouTube" hidden></section>
         <section id="screen-movies" class="screen screen--scroll" aria-label="Películas" hidden></section>
+        <section id="screen-files" class="screen screen--scroll" aria-label="Archivos" hidden></section>
         <section id="screen-settings" class="screen" aria-label="Configuración" hidden></section>
       </main>
 
@@ -87,10 +89,20 @@
   <!-- Aplicación abierta (simulada) -->
   <div id="overlay" hidden></div>
   <div id="player" hidden></div>
+  <div id="file-viewer" hidden></div>
   <div id="dialog" hidden></div>
   <div id="toasts" aria-live="polite"></div>
 
   <noscript>WebBox OS necesita JavaScript.</noscript>
-  <script type="module" src="js/main.js"></script>
+  <script>
+    // file:// no permite cargar módulos ES locales en Chromium; se usa el bundle generado.
+    (() => {
+      const local = location.protocol === 'file:';
+      const script = document.createElement('script');
+      if (!local) script.type = 'module';
+      script.src = local ? 'js/bundle.js' : 'js/main.js';
+      document.head.appendChild(script);
+    })();
+  </script>
 </body>
 </html>

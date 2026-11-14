@@ -129,6 +129,46 @@ class VideoAdapter {
   destroy() { this.v?.pause(); this.v?.removeAttribute('src'); this.v?.load(); }
 }
 
+class AudioAdapter {
+  constructor(host, media, { onState, onError }) {
+    this.host = host;
+    this.media = media;
+    this.onState = onState;
+    this.onError = onError;
+    this.a = null;
+  }
+
+  async init() {
+    const a = document.createElement('audio');
+    a.preload = 'auto';
+    a.src = this.media.src;
+    a.addEventListener('playing', () => this.onState(1));
+    a.addEventListener('waiting', () => this.onState(3));
+    a.addEventListener('pause', () => this.onState(2));
+    a.addEventListener('ended', () => this.onState(0));
+    a.addEventListener('error', () => this.onError('No se pudo reproducir el archivo de audio. Revisa su formato.'));
+    this.host.replaceWith(a);
+    this.a = a;
+    a.play().catch(() => { /* si el navegador bloquea el autoplay, queda en pausa */ });
+  }
+
+  isPlaying() { return Boolean(this.a && !this.a.paused && !this.a.ended); }
+  toggle() { if (this.a?.paused) this.a.play().catch(() => {}); else this.a?.pause(); }
+  seek(delta) {
+    if (this.a) this.a.currentTime = Math.max(0, this.a.currentTime + delta);
+  }
+  time() {
+    return [this.a?.currentTime ?? 0, Number.isFinite(this.a?.duration) ? this.a.duration : 0];
+  }
+  isMuted() { return Boolean(this.a?.muted); }
+  toggleMute() { if (this.a) this.a.muted = !this.a.muted; }
+  destroy() {
+    this.a?.pause();
+    this.a?.removeAttribute('src');
+    this.a?.load();
+  }
+}
+
 // ----------------------------------------------------------------- reproductor
 
 export class Player {
@@ -150,14 +190,33 @@ export class Player {
   }
 
   async open(item, { onDelete } = {}) {
-    if (this.isOpen) return;
     const media = parseMediaUrl(item.url);
     if (!media) {
       toast('Ese enlace no es válido. Elimínalo y vuelve a agregarlo.');
       return;
     }
+    return this.#open(item, media, { onDelete });
+  }
+
+  /** Abre un archivo local seleccionado desde Archivos o guardado en Películas. */
+  async openFile(file, { onDelete, title = file.name } = {}) {
+    const audio = file.type?.startsWith('audio/') || /\.(mp3|m4a|aac|wav|ogg|oga|flac|opus|wma)$/i.test(file.name || '');
+    const objectUrl = URL.createObjectURL(file);
+    return this.#open(
+      { title: title || file.name || 'Archivo local', url: objectUrl },
+      { type: audio ? 'audio' : 'video', src: objectUrl },
+      { onDelete, objectUrl },
+    );
+  }
+
+  async #open(item, media, { onDelete, objectUrl } = {}) {
+    if (this.isOpen) {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      return;
+    }
     this.item = item;
     this.onDelete = onDelete ?? null;
+    this.objectUrl = objectUrl ?? null;
     this.confirmDelete = false;
     this.returnFid = this.focus.current?.dataset.fid ?? null;
     this.isOpen = true;
@@ -165,6 +224,7 @@ export class Player {
 
     this.el.innerHTML = `
       <div class="player-stage" data-stage><div data-host></div></div>
+      ${media.type === 'audio' ? `<div class="player-audio-label">${icon('music')}<span>Reproduciendo audio</span></div>` : ''}
       <div class="player-msg" data-msg>Cargando…</div>
       <div class="player-top"><span class="player-title">${esc(item.title)}</span></div>
       <div class="player-controls">
@@ -179,11 +239,12 @@ export class Player {
           ${this.#btn('fwd', 'fwd10', '10 s')}
           ${media.listId ? this.#btn('prev', 'prev', 'Anterior') + this.#btn('next', 'next', 'Siguiente') : ''}
           ${this.#btn('mute', 'volume', 'Sonido')}
-          ${this.#btn('full', 'fullscreen', 'Pantalla completa')}
+          ${media.type !== 'audio' ? this.#btn('full', 'fullscreen', 'Pantalla completa') : ''}
           ${onDelete ? this.#btn('del', 'trash', 'Eliminar') : ''}
           ${this.#btn('close', 'close', 'Cerrar')}
         </div>
       </div>`;
+    this.el.classList.toggle('is-audio', media.type === 'audio');
     this.el.classList.remove('is-idle');
     this.el.hidden = false;
     this.focus.clear();
@@ -191,10 +252,10 @@ export class Player {
     this.focus.focusByFid('pl:toggle');
     this.#show();
 
-    const Adapter = media.type === 'youtube' ? YouTubeAdapter : VideoAdapter;
+    const Adapter = media.type === 'youtube' ? YouTubeAdapter : media.type === 'audio' ? AudioAdapter : VideoAdapter;
     const adapter = new Adapter(this.el.querySelector('[data-host]'), media, {
-      onState: (s) => this.#onState(s),
-      onError: (msg) => this.#fail(msg),
+      onState: (state) => this.#onState(state),
+      onError: (message) => this.#fail(message),
     });
     this.adapter = adapter;
     try {
@@ -203,7 +264,7 @@ export class Player {
       if (this.adapter === adapter) {
         this.#fail(media.type === 'youtube'
           ? `No se pudo cargar YouTube (${err.message}). Revisa tu conexión a internet.`
-          : 'No se pudo abrir el video.');
+          : media.type === 'audio' ? 'No se pudo abrir el audio.' : 'No se pudo abrir el video.');
       }
       return;
     }
@@ -219,8 +280,11 @@ export class Player {
     if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
     this.adapter?.destroy();
     this.adapter = null;
+    if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
+    this.objectUrl = null;
     this.isOpen = false;
     document.body.classList.remove('player-open');
+    this.el.classList.remove('is-audio');
     this.el.hidden = true;
     this.el.innerHTML = '';
     this.focus.popScope();

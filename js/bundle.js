@@ -1,0 +1,3402 @@
+/* WebBox OS — bundle generado por tools/build.py. No editar a mano. */
+(function () {
+  'use strict';
+  const __modules = Object.create(null);
+  __modules["js/core/events.js"] = function (module, exports, __require) {
+/**
+ * Bus de eventos mínimo. Desacopla las entradas (teclado, mando, mouse)
+ * de la lógica de navegación y de la interfaz.
+ *
+ * Eventos usados en WebBox OS:
+ *  - 'action'             { action, source }   acción de navegación unificada
+ *  - 'gamepad:connect'    { index, id, name }
+ *  - 'gamepad:disconnect' { index, id, name }
+ *  - 'gamepad:button'     { index, button, pressed, id }   (crudo, para pruebas)
+ *  - 'gamepad:frame'      [ { index, buttons, axes } ]     (solo si hay observadores)
+ *  - 'config:change'      { key, value }
+ *  - 'focus:change'       { el, prev }
+ */
+class EventBus {
+  #listeners = new Map();
+
+  on(type, fn) {
+    let set = this.#listeners.get(type);
+    if (!set) {
+      set = new Set();
+      this.#listeners.set(type, set);
+    }
+    set.add(fn);
+    return () => this.off(type, fn);
+  }
+
+  off(type, fn) {
+    this.#listeners.get(type)?.delete(fn);
+  }
+
+  emit(type, detail) {
+    const set = this.#listeners.get(type);
+    if (!set) return;
+    for (const fn of [...set]) {
+      try {
+        fn(detail);
+      } catch (err) {
+        console.error(`[bus] error en listener de "${type}":`, err);
+      }
+    }
+  }
+}
+
+const bus = new EventBus();
+    Object.assign(exports, { EventBus, bus });
+  };
+  __modules["js/core/storage.js"] = function (module, exports, __require) {
+/**
+ * Envoltorio de localStorage con respaldo en memoria.
+ * Algunos navegadores de Smart TV o modos privados lanzan excepciones al
+ * escribir; en ese caso las preferencias viven solo durante la sesión.
+ */
+const PREFIX = 'webboxos:';
+const memory = new Map();
+
+let ls = null;
+try {
+  ls = window.localStorage;
+  const probe = `${PREFIX}__probe`;
+  ls.setItem(probe, '1');
+  ls.removeItem(probe);
+} catch {
+  ls = null;
+}
+
+const storage = {
+  /** true si las preferencias se guardan de forma persistente */
+  available: Boolean(ls),
+
+  get(key, fallback = null) {
+    try {
+      const raw = ls ? ls.getItem(PREFIX + key) : memory.get(key);
+      if (raw === null || raw === undefined) return fallback;
+      return JSON.parse(raw);
+    } catch {
+      return fallback;
+    }
+  },
+
+  set(key, value) {
+    const raw = JSON.stringify(value);
+    try {
+      if (ls) ls.setItem(PREFIX + key, raw);
+      else memory.set(key, raw);
+    } catch {
+      memory.set(key, raw);
+    }
+  },
+
+  remove(key) {
+    try {
+      if (ls) ls.removeItem(PREFIX + key);
+    } catch {
+      /* sin acción */
+    }
+    memory.delete(key);
+  },
+};
+    Object.assign(exports, { storage });
+  };
+  __modules["js/core/config.js"] = function (module, exports, __require) {
+/**
+ * Configuración persistente de WebBox OS.
+ * Valida lo leído de localStorage, expone get/set y avisa por el bus.
+ */
+const { bus } = __require("js/core/events.js");
+const { storage } = __require("js/core/storage.js");
+
+const ACTIONS = ['up', 'down', 'left', 'right', 'ok', 'back', 'home'];
+
+/**
+ * Mapeo por defecto (layout "standard" de la Gamepad API).
+ * Otros mandos pueden numerar distinto: por eso cada mando (identificado por
+ * su `id`) puede tener su propio mapeo, editable desde Configuración.
+ */
+const DEFAULT_MAPPING = Object.freeze({
+  up: [12],
+  down: [13],
+  left: [14],
+  right: [15],
+  ok: [0],
+  back: [1],
+  home: [9, 16],
+});
+
+/** Milisegundos entre repeticiones para sensibilidad 1..5 */
+const REPEAT_INTERVALS = [260, 200, 150, 110, 80];
+
+const DEFAULTS = {
+  sensitivity: 3,
+  stickDeadzone: 0.5,
+  stickNav: true,
+  keyboardThrottle: true,
+  background: 'aurora',
+  uiScale: 100,
+  overscan: 0,
+  reduceMotion: false,
+  clock24: true,
+  showHints: true,
+  mappings: {},
+};
+
+const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+
+function sanitize(raw) {
+  const out = { ...DEFAULTS, mappings: {} };
+  if (!raw || typeof raw !== 'object') return out;
+
+  for (const key of Object.keys(DEFAULTS)) {
+    if (key === 'mappings') continue;
+    if (typeof raw[key] === typeof DEFAULTS[key]) out[key] = raw[key];
+  }
+  out.sensitivity = clamp(Math.round(out.sensitivity), 1, 5);
+  out.stickDeadzone = clamp(out.stickDeadzone, 0.2, 0.9);
+  out.uiScale = clamp(Math.round(out.uiScale), 70, 140);
+  out.overscan = clamp(Math.round(out.overscan), 0, 8);
+
+  if (raw.mappings && typeof raw.mappings === 'object') {
+    for (const [padId, mapping] of Object.entries(raw.mappings)) {
+      if (!mapping || typeof mapping !== 'object') continue;
+      const clean = {};
+      for (const action of ACTIONS) {
+        const list = mapping[action];
+        if (
+          Array.isArray(list) &&
+          list.length > 0 &&
+          list.every((n) => Number.isInteger(n) && n >= 0 && n < 64)
+        ) {
+          clean[action] = list.slice(0, 4);
+        }
+      }
+      out.mappings[padId] = clean;
+    }
+  }
+  return out;
+}
+
+let state = sanitize(storage.get('config', null));
+
+function persist() {
+  storage.set('config', state);
+}
+
+const config = {
+  get(key) {
+    return state[key];
+  },
+
+  set(key, value) {
+    if (!(key in DEFAULTS) || key === 'mappings') return;
+    state[key] = value;
+    persist();
+    bus.emit('config:change', { key, value });
+  },
+
+  /** Intervalo de repetición (ms) según la sensibilidad actual */
+  repeatInterval() {
+    return REPEAT_INTERVALS[state.sensitivity - 1];
+  },
+
+  /** Retardo antes de empezar a repetir al mantener pulsado */
+  repeatDelay() {
+    return Math.round(this.repeatInterval() * 1.6 + 120);
+  },
+
+  /** Mapeo efectivo de un mando (por defecto + cambios del usuario) */
+  getMapping(padId) {
+    return { ...DEFAULT_MAPPING, ...(state.mappings[padId] || {}) };
+  },
+
+  setMapping(padId, action, buttons) {
+    if (!ACTIONS.includes(action)) return;
+    state.mappings[padId] = { ...(state.mappings[padId] || {}), [action]: buttons };
+    persist();
+    bus.emit('config:change', { key: 'mappings', value: padId });
+  },
+
+  resetMapping(padId) {
+    delete state.mappings[padId];
+    persist();
+    bus.emit('config:change', { key: 'mappings', value: padId });
+  },
+
+  /** Restablece todos los ajustes de fábrica */
+  reset() {
+    state = sanitize(null);
+    persist();
+    bus.emit('config:change', { key: '*', value: null });
+  },
+};
+    Object.assign(exports, { ACTIONS, DEFAULT_MAPPING, REPEAT_INTERVALS, config });
+  };
+  __modules["js/core/focus.js"] = function (module, exports, __require) {
+/**
+ * Administrador centralizado del foco.
+ *
+ * - Solo UN elemento tiene el foco a la vez (clase `is-focused`).
+ * - Navegación espacial: busca el elemento más cercano en la dirección pedida
+ *   usando la geometría real en pantalla (getBoundingClientRect).
+ * - "Zonas" (data-zone): movimientos verticales se quedan dentro de la zona;
+ *   los horizontales pueden saltar a otra zona (p. ej. de las tarjetas al menú
+ *   lateral) y recuerdan el último elemento enfocado de esa zona.
+ * - "Ámbitos" (scopes): un overlay puede bloquear el foco dentro de sí mismo.
+ *
+ * Los elementos navegables se marcan con el atributo `data-focusable`.
+ */
+const { bus } = __require("js/core/events.js");
+
+const HORIZONTAL = new Set(['left', 'right']);
+
+function isUsable(el) {
+  return el.getClientRects().length > 0 && el.getAttribute('aria-disabled') !== 'true';
+}
+
+class FocusManager {
+  constructor(defaultRoot) {
+    this.defaultRoot = defaultRoot;
+    this.scopes = [];
+    this.current = null;
+    this.zoneMemory = new Map();
+    /** 'smooth' o 'auto' (sin animación) */
+    this.scrollBehavior = 'smooth';
+  }
+
+  get scope() {
+    return this.scopes.length ? this.scopes[this.scopes.length - 1] : this.defaultRoot;
+  }
+
+  /** Elementos enfocables y visibles dentro del ámbito activo */
+  candidates() {
+    return Array.from(this.scope.querySelectorAll('[data-focusable]')).filter(isUsable);
+  }
+
+  isInScope(el) {
+    return Boolean(el) && this.scope.contains(el) && isUsable(el);
+  }
+
+  byFid(fid) {
+    if (!fid) return null;
+    return this.candidates().find((el) => el.dataset.fid === fid) ?? null;
+  }
+
+  /** Da el foco a un elemento (y quita el anterior). */
+  set(el, { scroll = true } = {}) {
+    if (!el) return;
+    if (this.current === el) {
+      if (scroll) this.reveal(el);
+      return;
+    }
+    const prev = this.current;
+    if (prev) prev.classList.remove('is-focused');
+
+    this.current = el;
+    el.classList.add('is-focused');
+    try {
+      el.focus({ preventScroll: true });
+    } catch {
+      /* elemento no enfocable por el navegador: no es grave */
+    }
+
+    const zone = el.dataset.zone;
+    if (zone) this.zoneMemory.set(zone, el);
+
+    if (scroll) this.reveal(el);
+    el.dispatchEvent(new CustomEvent('tvfocus', { bubbles: true }));
+    bus.emit('focus:change', { el, prev });
+  }
+
+  clear() {
+    if (this.current) this.current.classList.remove('is-focused');
+    this.current = null;
+  }
+
+  /** Desplaza los contenedores para que el elemento quede centrado. */
+  reveal(el) {
+    if (el.hasAttribute('data-noreveal')) return;
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: this.scrollBehavior });
+  }
+
+  /** Enfoca el primer candidato que cumpla el selector (o el primero en general). */
+  focusFirst(selector = null, opts) {
+    let list = this.candidates();
+    if (selector) {
+      const filtered = list.filter((el) => el.matches(selector));
+      if (filtered.length) list = filtered;
+    }
+    if (!list.length) return false;
+    this.set(list[0], opts);
+    return true;
+  }
+
+  focusByFid(fid, opts) {
+    const el = this.byFid(fid);
+    if (el) this.set(el, opts);
+    return Boolean(el);
+  }
+
+  pushScope(root) {
+    this.scopes.push(root);
+  }
+
+  popScope() {
+    this.scopes.pop();
+    this.clear();
+  }
+
+  activate() {
+    if (this.current && this.current.isConnected) this.current.click();
+  }
+
+  #pickDefault(cands) {
+    return cands.find((c) => c.dataset.zone === 'main') ?? cands[0];
+  }
+
+  /** Al cambiar de zona, vuelve al último elemento recordado de esa zona. */
+  #zoneTarget(zone, cands) {
+    const remembered = this.zoneMemory.get(zone);
+    const rememberedOk = remembered && cands.includes(remembered) ? remembered : null;
+    const marked = cands.find((c) => c.dataset.zone === zone && c.classList.contains('is-current'));
+    return zone === 'nav' ? marked || rememberedOk : rememberedOk || marked;
+  }
+
+  /**
+   * Mueve el foco en una dirección: 'up' | 'down' | 'left' | 'right'.
+   * Devuelve true si el foco cambió.
+   */
+  move(dir) {
+    const cands = this.candidates();
+    if (!cands.length) return false;
+
+    const cur = this.current;
+    if (!cur || !cands.includes(cur)) {
+      this.set(this.#pickDefault(cands));
+      return true;
+    }
+
+    const a = cur.getBoundingClientRect();
+    const acx = a.left + a.width / 2;
+    const acy = a.top + a.height / 2;
+    const zone = cur.dataset.zone;
+    const horizontal = HORIZONTAL.has(dir);
+
+    let best = null;
+
+    // Pasada 1: misma zona. Movimiento horizontal exige solapamiento vertical
+    // (para no saltar de una fila a otra al llegar al final).
+    // Pasada 2 (solo horizontal): otras zonas, con tolerancia vertical.
+    for (let pass = 1; pass <= (horizontal ? 2 : 1); pass += 1) {
+      const found = [];
+      for (const el of cands) {
+        if (el === cur) continue;
+        const sameZone = el.dataset.zone === zone;
+        if ((pass === 1) !== sameZone) continue;
+
+        const b = el.getBoundingClientRect();
+        const dx = b.left + b.width / 2 - acx;
+        const dy = b.top + b.height / 2 - acy;
+
+        let primary;
+        let cross;
+        let ok;
+        switch (dir) {
+          case 'left':
+            ok = dx < -Math.min(a.width, b.width) * 0.25;
+            primary = -dx;
+            cross = Math.abs(dy);
+            break;
+          case 'right':
+            ok = dx > Math.min(a.width, b.width) * 0.25;
+            primary = dx;
+            cross = Math.abs(dy);
+            break;
+          case 'up':
+            ok = dy < -Math.min(a.height, b.height) * 0.25;
+            primary = -dy;
+            cross = Math.abs(dx);
+            break;
+          case 'down':
+            ok = dy > Math.min(a.height, b.height) * 0.25;
+            primary = dy;
+            cross = Math.abs(dx);
+            break;
+          default:
+            return false;
+        }
+        if (!ok) continue;
+        if (horizontal && pass === 1 && cross > Math.max(a.height, b.height) * 0.6) continue;
+        found.push({ el, primary, cross });
+      }
+      if (!found.length) continue;
+
+      if (horizontal) {
+        // Horizontal: el más cercano ponderando la desalineación vertical.
+        let bestScore = Infinity;
+        for (const f of found) {
+          const score = f.primary + f.cross * 4;
+          if (score < bestScore) {
+            bestScore = score;
+            best = f.el;
+          }
+        }
+      } else {
+        // Vertical: primero la fila (o columna) más cercana; dentro de ella,
+        // el elemento más alineado con el actual. Así nunca se salta una fila.
+        const nearest = Math.min(...found.map((f) => f.primary));
+        const band = nearest + a.height * 0.5;
+        let bestCross = Infinity;
+        for (const f of found) {
+          if (f.primary > band) continue;
+          if (f.cross < bestCross) {
+            bestCross = f.cross;
+            best = f.el;
+          }
+        }
+      }
+      if (best) break;
+    }
+
+    if (!best) {
+      this.bump(cur, dir);
+      return false;
+    }
+
+    if (best.dataset.zone !== zone) {
+      const target = this.#zoneTarget(best.dataset.zone, cands);
+      if (target) best = target;
+    }
+    this.set(best);
+    return true;
+  }
+
+  /** Pequeño "rebote" cuando no hay nada más en esa dirección. */
+  bump(el, dir) {
+    const cls = `bump-${dir}`;
+    el.classList.remove(cls);
+    // Fuerza reflow para poder reiniciar la animación.
+    void el.offsetWidth;
+    el.classList.add(cls);
+    el.addEventListener('animationend', () => el.classList.remove(cls), { once: true });
+  }
+}
+    Object.assign(exports, { FocusManager });
+  };
+  __modules["js/input/gamepad.js"] = function (module, exports, __require) {
+/**
+ * Administrador de mandos con la Gamepad API.
+ *
+ * - Eventos `gamepadconnected` / `gamepaddisconnected` + escaneo por polling
+ *   (algunos navegadores no avisan hasta que se pulsa un botón).
+ * - Polling con requestAnimationFrame: navigator.getGamepads() devuelve una
+ *   "foto" nueva en cada llamada, por eso se consulta en cada fotograma.
+ * - Mapeo configurable por mando (config.getMapping(pad.id)).
+ * - Palancas (ejes 0 y 1) con zona muerta configurable.
+ * - Anti-rebote: primer disparo inmediato, retardo inicial y luego repetición
+ *   a un intervalo que depende de la sensibilidad.
+ * - Modo captura: permite asignar el siguiente botón pulsado a una acción.
+ *
+ * Publica en el bus: 'action', 'gamepad:connect', 'gamepad:disconnect',
+ * 'gamepad:button' y 'gamepad:frame' (este último solo si `watching`).
+ */
+const { bus } = __require("js/core/events.js");
+const { config } = __require("js/core/config.js");
+
+const DIRECTIONS = new Set(['up', 'down', 'left', 'right']);
+/** Acciones que, mantenidas, sacan de la pantalla de prueba */
+const EXIT_ACTIONS = ['back', 'home'];
+const EXIT_HOLD_MS = 1000;
+
+/** "Xbox 360 Controller (STANDARD GAMEPAD Vendor: 045e ...)" -> "Xbox 360 Controller" */
+function cleanPadName(id = '') {
+  const name = id.replace(/\s*\(.*\)\s*$/, '').trim();
+  return name || id || 'Mando desconocido';
+}
+
+class GamepadManager {
+  constructor() {
+    this.pads = new Map();
+    this.running = false;
+    this.watching = false;
+    this.rafId = 0;
+    this.captureCb = null;
+    this.captureTimer = 0;
+    /** Función que devuelve true mientras la pantalla de prueba está activa */
+    this.testModeProvider = null;
+    this.tick = this.tick.bind(this);
+  }
+
+  get supported() {
+    return typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function';
+  }
+
+  start() {
+    if (this.running || !this.supported) return;
+    this.running = true;
+    window.addEventListener('gamepadconnected', (e) => this.#connect(e.gamepad));
+    window.addEventListener('gamepaddisconnected', (e) => this.#disconnect(e.gamepad.index));
+    this.#scan();
+    this.rafId = requestAnimationFrame(this.tick);
+  }
+
+  stop() {
+    this.running = false;
+    cancelAnimationFrame(this.rafId);
+  }
+
+  /** Activa/desactiva el envío de 'gamepad:frame' (pantalla de prueba). */
+  setWatching(value) {
+    this.watching = Boolean(value);
+  }
+
+  /** Información de los mandos conectados. */
+  getPads() {
+    return [...this.pads.values()].map((st) => ({
+      index: st.index,
+      id: st.id,
+      name: cleanPadName(st.id),
+      mapping: st.mapping,
+      buttonCount: st.buttonCount,
+      axisCount: st.axisCount,
+    }));
+  }
+
+  /**
+   * Espera el próximo botón pulsado en cualquier mando.
+   * @param {(button:number, pad:{index:number,id:string})=>void} onButton
+   * @param {number} timeoutMs
+   * @param {()=>void} [onTimeout]
+   */
+  captureNext(onButton, timeoutMs = 8000, onTimeout) {
+    this.cancelCapture();
+    this.captureCb = onButton;
+    this.captureTimer = setTimeout(() => {
+      if (!this.captureCb) return;
+      this.captureCb = null;
+      onTimeout?.();
+    }, timeoutMs);
+  }
+
+  cancelCapture() {
+    this.captureCb = null;
+    clearTimeout(this.captureTimer);
+  }
+
+  get capturing() {
+    return this.captureCb !== null;
+  }
+
+  // ---------------------------------------------------------------- interno
+
+  #scan() {
+    for (const pad of navigator.getGamepads()) {
+      if (pad && pad.connected) this.#connect(pad);
+    }
+  }
+
+  #connect(pad) {
+    if (!pad || this.pads.has(pad.index)) return;
+    const st = {
+      index: pad.index,
+      id: pad.id,
+      mapping: pad.mapping,
+      buttonCount: pad.buttons.length,
+      axisCount: pad.axes.length,
+      prev: [],
+      held: new Map(),
+      exitHold: new Map(),
+      // Ignora todo hasta que se suelten los botones: el primer botón que
+      // "despierta" al mando no debe activar nada en la interfaz.
+      suppress: true,
+    };
+    this.pads.set(pad.index, st);
+    bus.emit('gamepad:connect', { index: pad.index, id: pad.id, name: cleanPadName(pad.id) });
+  }
+
+  #disconnect(index) {
+    const st = this.pads.get(index);
+    if (!st) return;
+    this.pads.delete(index);
+    bus.emit('gamepad:disconnect', { index, id: st.id, name: cleanPadName(st.id) });
+  }
+
+  /**
+   * En la pantalla de prueba los botones NO navegan (si no, no se podría
+   * probar la cruceta ni B). Se sale manteniendo Atrás o Inicio 1 segundo.
+   */
+  #testModeExit(st, active, now) {
+    st.held.clear();
+    for (const action of EXIT_ACTIONS) {
+      if (!active.has(action)) {
+        st.exitHold.delete(action);
+        continue;
+      }
+      const since = st.exitHold.get(action);
+      if (since === undefined) {
+        st.exitHold.set(action, now);
+      } else if (now - since >= EXIT_HOLD_MS) {
+        st.exitHold.clear();
+        st.suppress = true; // espera a que suelte el botón
+        bus.emit('action', { action, source: 'gamepad', padIndex: st.index });
+        return;
+      }
+    }
+  }
+
+  tick(now) {
+    if (!this.running) return;
+    this.poll(now);
+    this.rafId = requestAnimationFrame(this.tick);
+  }
+
+  poll(now) {
+    const list = navigator.getGamepads();
+    const seen = new Set();
+    const frame = this.watching ? [] : null;
+
+    for (const pad of list) {
+      if (!pad || !pad.connected) continue;
+      seen.add(pad.index);
+      if (!this.pads.has(pad.index)) this.#connect(pad);
+      this.#process(pad, this.pads.get(pad.index), now, frame);
+    }
+
+    // Desconexión detectada por polling (por si el navegador no emitió el evento)
+    for (const index of [...this.pads.keys()]) {
+      if (!seen.has(index)) this.#disconnect(index);
+    }
+
+    if (frame) bus.emit('gamepad:frame', frame);
+  }
+
+  #process(pad, st, now, frame) {
+    st.buttonCount = pad.buttons.length;
+    st.axisCount = pad.axes.length;
+
+    const down = pad.buttons.map((b) => b.pressed || b.value > 0.5);
+
+    // Eventos crudos de botones (pantalla de prueba y captura de mapeo)
+    for (let i = 0; i < down.length; i += 1) {
+      const was = Boolean(st.prev[i]);
+      if (down[i] === was) continue;
+      bus.emit('gamepad:button', { index: pad.index, button: i, pressed: down[i], id: pad.id });
+      if (down[i] && this.captureCb) {
+        const cb = this.captureCb;
+        this.cancelCapture();
+        st.suppress = true;
+        cb(i, { index: pad.index, id: pad.id });
+      }
+    }
+    st.prev = down;
+
+    if (frame) {
+      frame.push({
+        index: pad.index,
+        buttons: pad.buttons.map((b) => ({ pressed: b.pressed || b.value > 0.5, value: b.value })),
+        axes: Array.from(pad.axes),
+      });
+    }
+
+    // Acciones activas ahora mismo
+    const mapping = config.getMapping(pad.id);
+    const active = new Set();
+    for (const [action, buttons] of Object.entries(mapping)) {
+      if (buttons.some((b) => down[b])) active.add(action);
+    }
+    if (config.get('stickNav')) {
+      const dz = config.get('stickDeadzone');
+      const x = pad.axes[0] ?? 0;
+      const y = pad.axes[1] ?? 0;
+      if (Math.abs(x) >= Math.abs(y)) {
+        if (x <= -dz) active.add('left');
+        else if (x >= dz) active.add('right');
+      } else if (y <= -dz) active.add('up');
+      else if (y >= dz) active.add('down');
+    }
+
+    if (st.suppress) {
+      st.held.clear();
+      if (active.size === 0 && !down.some(Boolean)) st.suppress = false;
+      return;
+    }
+    if (this.captureCb) {
+      st.held.clear();
+      return;
+    }
+    if (this.testModeProvider?.() === true) {
+      this.#testModeExit(st, active, now);
+      return;
+    }
+    st.exitHold.clear();
+
+    for (const action of active) {
+      const rec = st.held.get(action);
+      if (!rec) {
+        bus.emit('action', { action, source: 'gamepad', padIndex: pad.index });
+        st.held.set(action, { next: now + config.repeatDelay() });
+      } else if (DIRECTIONS.has(action) && now >= rec.next) {
+        bus.emit('action', { action, source: 'gamepad', padIndex: pad.index });
+        rec.next = now + config.repeatInterval();
+      }
+    }
+    for (const action of [...st.held.keys()]) {
+      if (!active.has(action)) st.held.delete(action);
+    }
+  }
+}
+    Object.assign(exports, { cleanPadName, GamepadManager });
+  };
+  __modules["js/input/keyboard.js"] = function (module, exports, __require) {
+/**
+ * Entrada de teclado. También cubre los controles remotos Bluetooth que se
+ * comportan como teclado (flechas, Enter, Atrás/Escape, Inicio).
+ * Traduce teclas a acciones y las publica en el bus.
+ */
+const { bus } = __require("js/core/events.js");
+const { config } = __require("js/core/config.js");
+
+const KEY_MAP = {
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+  Enter: 'ok',
+  ' ': 'ok',
+  Escape: 'back',
+  Backspace: 'back',
+  BrowserBack: 'back',
+  GoBack: 'back',
+  Home: 'home',
+  BrowserHome: 'home',
+  h: 'home',
+};
+
+const DIRECTIONS = new Set(['up', 'down', 'left', 'right']);
+
+class KeyboardInput {
+  constructor() {
+    this.lastMove = 0;
+    this.onKeyDown = this.onKeyDown.bind(this);
+  }
+
+  start() {
+    window.addEventListener('keydown', this.onKeyDown, true);
+  }
+
+  stop() {
+    window.removeEventListener('keydown', this.onKeyDown, true);
+  }
+
+  onKeyDown(e) {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    const tag = e.target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    const action = KEY_MAP[key];
+    if (!action) return;
+    e.preventDefault();
+
+    const now = performance.now();
+    if (e.repeat) {
+      // Solo las direcciones se repiten, y respetando la sensibilidad.
+      if (!DIRECTIONS.has(action)) return;
+      if (config.get('keyboardThrottle') && now - this.lastMove < config.repeatInterval()) return;
+    }
+    if (DIRECTIONS.has(action)) this.lastMove = now;
+
+    bus.emit('action', { action, source: 'keyboard' });
+  }
+}
+    Object.assign(exports, { KeyboardInput });
+  };
+  __modules["js/data/apps.js"] = function (module, exports, __require) {
+/**
+ * Datos de ejemplo del Launcher (Fase 1: sin aplicaciones reales todavía).
+ */
+
+const APPS = [
+  { id: 'youtube', name: 'YouTube', icon: 'youtube', c1: '#b91c1c', c2: '#f87171', screen: 'youtube' },
+  { id: 'movies', name: 'Películas', icon: 'film', c1: '#7c2d12', c2: '#f59e0b', screen: 'movies' },
+  { id: 'videos', name: 'Videos', icon: 'play', c1: '#ff5f6d', c2: '#ffa751' },
+  { id: 'music', name: 'Música', icon: 'music', c1: '#7f5af0', c2: '#2cb1ff' },
+  { id: 'photos', name: 'Fotos', icon: 'photo', c1: '#11998e', c2: '#7ee08f' },
+  { id: 'browser', name: 'Navegador', icon: 'globe', c1: '#2563eb', c2: '#22d3ee' },
+  { id: 'games', name: 'Juegos', icon: 'gamepad', c1: '#e11d74', c2: '#9333ea' },
+  { id: 'tv', name: 'TV en vivo', icon: 'tv', c1: '#f59e0b', c2: '#ef4444' },
+  { id: 'files', name: 'Archivos', icon: 'folder', c1: '#475569', c2: '#94a3b8', screen: 'files' },
+  { id: 'news', name: 'Noticias', icon: 'book', c1: '#0ea5e9', c2: '#6366f1' },
+];
+
+/** Orden de la fila "Aplicaciones favoritas" */
+const FAVORITES = ['youtube', 'movies', 'videos', 'music', 'photos', 'browser', 'games', 'tv', 'files'];
+
+/** Recientes iniciales (después se actualizan al abrir aplicaciones) */
+const DEFAULT_RECENTS = ['browser', 'photos', 'music'];
+
+/** Contenido de ejemplo para "Recomendado para ti" */
+const RECOMMENDED = [
+  { id: 'rec-1', name: 'Noches de ciencia', subtitle: 'Documental · ejemplo', icon: 'rocket', c1: '#1e3a8a', c2: '#7c3aed' },
+  { id: 'rec-2', name: 'Rutas de montaña', subtitle: 'Naturaleza · ejemplo', icon: 'mountain', c1: '#065f46', c2: '#34d399' },
+  { id: 'rec-3', name: 'Cine clásico', subtitle: 'Película · ejemplo', icon: 'film', c1: '#7c2d12', c2: '#f59e0b' },
+  { id: 'rec-4', name: 'Lista para concentrarse', subtitle: 'Música · ejemplo', icon: 'music', c1: '#312e81', c2: '#ec4899' },
+  { id: 'rec-5', name: 'Torneo de la semana', subtitle: 'Juegos · ejemplo', icon: 'gamepad', c1: '#831843', c2: '#fb7185' },
+  { id: 'rec-6', name: 'Recuerdos del verano', subtitle: 'Fotos · ejemplo', icon: 'photo', c1: '#0c4a6e', c2: '#38bdf8' },
+];
+
+/** Fondos disponibles (archivos en assets/backgrounds) */
+const BACKGROUNDS = [
+  { id: 'aurora', name: 'Aurora', file: 'assets/backgrounds/aurora.svg' },
+  { id: 'ocean', name: 'Océano', file: 'assets/backgrounds/ocean.svg' },
+  { id: 'sunset', name: 'Atardecer', file: 'assets/backgrounds/sunset.svg' },
+  { id: 'graphite', name: 'Grafito', file: 'assets/backgrounds/graphite.svg' },
+];
+    Object.assign(exports, { APPS, FAVORITES, DEFAULT_RECENTS, RECOMMENDED, BACKGROUNDS });
+  };
+  __modules["js/icons.js"] = function (module, exports, __require) {
+/**
+ * Iconos SVG propios (trazo de 24x24, sin dependencias externas).
+ */
+const PATHS = {
+  home: '<path d="M3 11.5 12 4l9 7.5"/><path d="M5 10.5V20h14v-9.5"/><path d="M10 20v-5h4v5"/>',
+  apps: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
+  settings: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
+  gamepad: '<path d="M7 8h10a4 4 0 0 1 3.9 4.9l-.8 3.6a2.4 2.4 0 0 1-4.2.9L14.5 15h-5l-1.4 2.4a2.4 2.4 0 0 1-4.2-.9l-.8-3.6A4 4 0 0 1 7 8z"/><path d="M8 10.5v3M6.5 12h3"/><circle cx="15.5" cy="11" r=".6"/><circle cx="17.5" cy="13" r=".6"/>',
+  play: '<circle cx="12" cy="12" r="9"/><path d="m10 8.5 5.5 3.5-5.5 3.5z"/>',
+  music: '<path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/>',
+  photo: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3L16 12l4 4.5"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>',
+  tv: '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/>',
+  folder: '<path d="M3.5 7.5a2 2 0 0 1 2-2H10l2 2.5h6.5a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
+  film: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 4v16M16 4v16M4 9h4M4 15h4M16 9h4M16 15h4"/>',
+  star: '<path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 16.9 6.8 19.7l1-5.9L3.5 9.7l5.9-.8z"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  check: '<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16.5 9.5"/>',
+  compass: '<circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/>',
+  back: '<path d="M9 6 3 12l6 6"/><path d="M3 12h11a6 6 0 0 1 6 6"/>',
+  fullscreen: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+  reset: '<path d="M4 12a8 8 0 1 0 2.5-5.8"/><path d="M4 4v4.5h4.5"/>',
+  rocket: '<path d="M12 3c3 2 5 5.500 5 9l-2 3H9l-2-3c0-3.500 2-7 5-9z"/><circle cx="12" cy="10" r="1.6"/><path d="M9 15l-2 4M15 15l2 4"/>',
+  book: '<path d="M5 4.5h11a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/>',
+  youtube: '<rect x="3" y="5.5" width="18" height="13" rx="4"/><path d="m10.2 9.2 4.6 2.8-4.6 2.8z"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  trash: '<path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l.8 12.5h9.4L17.5 7M10 11v5M14 11v5"/>',
+  pause: '<rect x="7" y="5" width="3.5" height="14" rx="1"/><rect x="13.5" y="5" width="3.5" height="14" rx="1"/>',
+  playsolid: '<path d="M8 5.5v13l11-6.5z"/>',
+  back10: '<path d="M4 12a8 8 0 1 0 2.5-5.8"/><path d="M4 4v4.5h4.5"/><path d="M10 9.5v5M13 9.5h2.2v5H13z"/>',
+  fwd10: '<path d="M20 12a8 8 0 1 1-2.5-5.8"/><path d="M20 4v4.5h-4.5"/><path d="M10 9.5v5M13 9.5h2.2v5H13z"/>',
+  volume: '<path d="M4 9.5v5h3.5l4.5 3.5v-12L7.500 9.500z"/><path d="M15.500 9a4 4 0 0 1 0 6M18 6.500a7.500 7.500 0 0 1 0 11"/>',
+  mute: '<path d="M4 9.5v5h3.5l4.5 3.5v-12L7.500 9.500z"/><path d="m16 9.500 5 5M21 9.500l-5 5"/>',
+  prev: '<path d="M6 5v14M18 5.500v13L9 12z"/>',
+  next: '<path d="M18 5v14M6 5.500v13L15 12z"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  external: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v4.500a1.500 1.500 0 0 1-1.500 1.500h-10A1.500 1.500 0 0 1 5 18.500v-10A1.500 1.500 0 0 1 6.500 7H11"/>',
+  mountain: '<path d="m3 19 6-10 4 6 3-4 5 8z"/><circle cx="17" cy="6.5" r="1.5"/>',
+};
+
+/** Devuelve el marcado SVG de un icono. */
+function icon(name, cls = '') {
+  const body = PATHS[name] ?? PATHS.star;
+  return `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${body}</svg>`;
+}
+
+/** Rellena todos los elementos con data-icon="nombre" dentro de root. */
+function hydrateIcons(root = document) {
+  for (const el of root.querySelectorAll('[data-icon]')) {
+    el.innerHTML = icon(el.dataset.icon);
+  }
+}
+    Object.assign(exports, { icon, hydrateIcons });
+  };
+  __modules["js/ui.js"] = function (module, exports, __require) {
+/** Utilidades de interfaz compartidas. */
+
+/** Escapa texto para insertarlo con seguridad en innerHTML. */
+function esc(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[c]);
+}
+
+/** Muestra un aviso breve en pantalla (máximo 3 a la vez). */
+function toast(message, ms = 2800) {
+  const host = document.getElementById('toasts');
+  if (!host) return;
+
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = message;
+  host.appendChild(el);
+  while (host.children.length > 3) host.firstElementChild.remove();
+
+  setTimeout(() => {
+    el.classList.add('out');
+    el.addEventListener('animationend', () => el.remove(), { once: true });
+    setTimeout(() => el.remove(), 700);
+  }, ms);
+}
+    Object.assign(exports, { esc, toast });
+  };
+  __modules["js/launcher.js"] = function (module, exports, __require) {
+/**
+ * Launcher: pantalla de inicio (filas de tarjetas) y pantalla de aplicaciones.
+ * No maneja entradas directamente: las tarjetas son elementos `data-focusable`
+ * y el administrador de foco hace `click()` al pulsar OK.
+ */
+const { APPS, FAVORITES, RECOMMENDED, DEFAULT_RECENTS } = __require("js/data/apps.js");
+const { icon } = __require("js/icons.js");
+const { storage } = __require("js/core/storage.js");
+const { esc } = __require("js/ui.js");
+
+const APP_BY_ID = new Map(APPS.map((a) => [a.id, a]));
+const REC_BY_ID = new Map(RECOMMENDED.map((r) => [r.id, r]));
+const MAX_RECENTS = 8;
+
+class Launcher {
+  /**
+   * @param {{homeEl:HTMLElement, appsEl:HTMLElement, onOpen:(item:object)=>void}} opts
+   */
+  constructor({ homeEl, appsEl, onOpen }) {
+    this.homeEl = homeEl;
+    this.appsEl = appsEl;
+    this.onOpen = onOpen;
+    this.recents = this.#loadRecents();
+
+    const handler = (e) => {
+      const card = e.target.closest('[data-kind]');
+      if (!card) return;
+      const item =
+        card.dataset.kind === 'app'
+          ? APP_BY_ID.get(card.dataset.id)
+          : REC_BY_ID.get(card.dataset.id);
+      if (item) this.onOpen({ ...item, kind: card.dataset.kind });
+    };
+    homeEl.addEventListener('click', handler);
+    appsEl.addEventListener('click', handler);
+  }
+
+  render() {
+    this.homeEl.innerHTML = `
+      ${this.#row('favorites', 'Aplicaciones favoritas', 'star', FAVORITES.map((id) => this.#appCard(APP_BY_ID.get(id), 'fav')).join(''))}
+      ${this.#row('recents', 'Recientes', 'clock', this.#recentsHTML())}
+      ${this.#row('recommended', 'Recomendado para ti', 'film', RECOMMENDED.map((r) => this.#recCard(r)).join(''))}
+    `;
+
+    this.appsEl.innerHTML = `
+      <h1 class="screen-title">Aplicaciones</h1>
+      <div class="grid">${APPS.map((a) => this.#appCard(a, 'all')).join('')}</div>
+    `;
+  }
+
+  /** Registra una aplicación abierta y refresca la fila de recientes. */
+  recordRecent(appId) {
+    if (!APP_BY_ID.has(appId)) return;
+    this.recents = [appId, ...this.recents.filter((id) => id !== appId)].slice(0, MAX_RECENTS);
+    storage.set('recents', this.recents);
+    const track = this.homeEl.querySelector('[data-track="recents"]');
+    if (track) track.innerHTML = this.#recentsHTML();
+  }
+
+  // ---------------------------------------------------------------- interno
+
+  #loadRecents() {
+    const saved = storage.get('recents', null);
+    const list = Array.isArray(saved)
+      ? saved.filter((id) => APP_BY_ID.has(id))
+      : DEFAULT_RECENTS.slice();
+    return list.slice(0, MAX_RECENTS);
+  }
+
+  #recentsHTML() {
+    if (!this.recents.length) return '<p class="row-empty">Aún no has abierto aplicaciones.</p>';
+    return this.recents.map((id) => this.#appCard(APP_BY_ID.get(id), 'recent')).join('');
+  }
+
+  #row(id, title, iconName, cards) {
+    return `
+      <section class="row" data-row="${id}">
+        <h2 class="row-title"><span class="row-icon">${icon(iconName)}</span>${esc(title)}</h2>
+        <div class="row-track" data-track="${id}">${cards}</div>
+      </section>`;
+  }
+
+  #appCard(app, prefix) {
+    return `
+      <div class="card" role="button" tabindex="-1" data-focusable data-zone="main"
+           data-kind="app" data-id="${app.id}" data-fid="${prefix}:${app.id}"
+           style="--c1:${app.c1};--c2:${app.c2}" aria-label="${esc(app.name)}">
+        <span class="card-art">${icon(app.icon)}</span>
+        <span class="card-label">${esc(app.name)}</span>
+      </div>`;
+  }
+
+  #recCard(item) {
+    return `
+      <div class="card card--wide" role="button" tabindex="-1" data-focusable data-zone="main"
+           data-kind="rec" data-id="${item.id}" data-fid="rec:${item.id}"
+           style="--c1:${item.c1};--c2:${item.c2}" aria-label="${esc(item.name)}">
+        <span class="card-art">${icon(item.icon)}</span>
+        <span class="card-label">${esc(item.name)}</span>
+        <span class="card-sub">${esc(item.subtitle)}</span>
+      </div>`;
+  }
+}
+    Object.assign(exports, { Launcher });
+  };
+  __modules["js/settings.js"] = function (module, exports, __require) {
+/**
+ * Pantalla de Configuración.
+ * Pestañas: Dispositivo · Mando · Prueba de botones · Navegación · Fondo · Pantalla.
+ *
+ * Todo es navegable con el foco central: las pestañas (zona "settings-tabs")
+ * cambian de panel al recibir el foco; los controles del panel pertenecen a la
+ * zona "settings-panel". Los ajustes numéricos usan botones − / + en lugar de
+ * deslizadores, porque son mucho más cómodos con un mando.
+ */
+const { config, ACTIONS, REPEAT_INTERVALS } = __require("js/core/config.js");
+const { storage } = __require("js/core/storage.js");
+const { bus } = __require("js/core/events.js");
+const { icon } = __require("js/icons.js");
+const { BACKGROUNDS } = __require("js/data/apps.js");
+const { esc, toast } = __require("js/ui.js");
+
+const TABS = [
+  { id: 'device', label: 'Dispositivo', icon: 'tv' },
+  { id: 'gamepad', label: 'Mando', icon: 'gamepad' },
+  { id: 'test', label: 'Prueba de botones', icon: 'check' },
+  { id: 'navigation', label: 'Navegación', icon: 'compass' },
+  { id: 'background', label: 'Fondo', icon: 'photo' },
+  { id: 'display', label: 'Pantalla', icon: 'sun' },
+];
+
+const ACTION_LABELS = {
+  up: 'Arriba',
+  down: 'Abajo',
+  left: 'Izquierda',
+  right: 'Derecha',
+  ok: 'OK / Seleccionar',
+  back: 'Atrás',
+  home: 'Inicio',
+};
+
+/** Nombres de botones del layout "standard" de la Gamepad API */
+const STANDARD_NAMES = {
+  0: 'A', 1: 'B', 2: 'X', 3: 'Y', 4: 'LB', 5: 'RB', 6: 'LT', 7: 'RT',
+  8: 'Select', 9: 'Start', 10: 'L3', 11: 'R3',
+  12: 'D-pad ↑', 13: 'D-pad ↓', 14: 'D-pad ←', 15: 'D-pad →', 16: 'Guía',
+};
+
+const SENSITIVITY_LABELS = ['Muy lenta', 'Lenta', 'Media', 'Rápida', 'Muy rápida'];
+
+const STEPS = {
+  sensitivity: { min: 1, max: 5, step: 1 },
+  stickDeadzone: { min: 0.2, max: 0.8, step: 0.1 },
+  uiScale: { min: 70, max: 140, step: 5 },
+  overscan: { min: 0, max: 8, step: 1 },
+};
+
+const round2 = (n) => Math.round(n * 100) / 100;
+
+function buttonLabel(index, standard) {
+  return standard && STANDARD_NAMES[index] ? `${index} · ${STANDARD_NAMES[index]}` : `Botón ${index}`;
+}
+
+class SettingsScreen {
+  /**
+   * @param {{root:HTMLElement, focus:import('./core/focus.js').FocusManager,
+   *          gamepad:import('./input/gamepad.js').GamepadManager}} opts
+   */
+  constructor({ root, focus, gamepad }) {
+    this.root = root;
+    this.focus = focus;
+    this.gamepad = gamepad;
+    this.active = 'device';
+    this.capturing = null; // acción que se está remapeando
+    this.confirmReset = false;
+    this.live = new Map(); // index -> { cells, bars }
+
+    root.innerHTML = `
+      <div class="settings">
+        <h1 class="screen-title">Configuración</h1>
+        <div class="settings-body">
+          <nav class="settings-tabs" aria-label="Secciones"></nav>
+          <section class="settings-panel" aria-live="polite"></section>
+        </div>
+      </div>`;
+    this.tabsEl = root.querySelector('.settings-tabs');
+    this.panelEl = root.querySelector('.settings-panel');
+
+    root.addEventListener('click', (e) => this.#onClick(e));
+    // Las pestañas cambian el panel en cuanto reciben el foco.
+    root.addEventListener('tvfocus', (e) => {
+      const tab = e.target.closest?.('[data-tab]');
+      if (tab) this.#setTab(tab.dataset.tab);
+    });
+
+    bus.on('gamepad:connect', () => this.#liveRefresh());
+    bus.on('gamepad:disconnect', () => this.#liveRefresh());
+    bus.on('gamepad:frame', (frame) => this.#onFrame(frame));
+    bus.on('gamepad:button', (ev) => this.#onRawButton(ev));
+    bus.on('config:change', ({ key }) => {
+      if (key === '*') this.rerender(true);
+    });
+    window.addEventListener('resize', () => {
+      if (this.active === 'device' && !this.root.hidden) this.rerender(false);
+    });
+  }
+
+  render() {
+    this.#renderTabs();
+    this.#renderPanel();
+  }
+
+  /** Se llama al entrar en la pantalla para refrescar datos. */
+  refresh() {
+    this.rerender(false);
+  }
+
+  /** true mientras la prueba de botones está a la vista (el mando no navega). */
+  isTestActive() {
+    return this.active === 'test' && !this.root.hidden;
+  }
+
+  /** Foco inicial al entrar desde el menú: la pestaña activa. */
+  focusEntry() {
+    this.focus.focusByFid(`tab:${this.active}`) || this.focus.focusFirst('[data-zone="settings-tabs"]');
+  }
+
+  /** Atrás: si se estaba remapeando un botón, cancela. Devuelve true si lo consumió. */
+  handleBack() {
+    if (!this.capturing) return false;
+    this.cancelCapture();
+    toast('Asignación cancelada');
+    return true;
+  }
+
+  cancelCapture() {
+    if (!this.capturing) return;
+    this.gamepad.cancelCapture();
+    this.capturing = null;
+    this.rerender(true);
+  }
+
+  /** Re-dibuja el panel conservando el foco cuando estaba dentro del panel. */
+  rerender(keepFocus = true) {
+    const cur = this.focus.current;
+    const fid = keepFocus && cur && cur.closest('.settings-panel') ? cur.dataset.fid : null;
+    this.#renderPanel();
+    if (fid) {
+      if (!this.focus.focusByFid(fid, { scroll: false })) {
+        this.focus.focusByFid(`tab:${this.active}`, { scroll: false });
+      }
+    }
+  }
+
+  // ------------------------------------------------------------- pestañas
+
+  #renderTabs() {
+    this.tabsEl.innerHTML = TABS.map(
+      (t) => `
+      <div class="tab${t.id === this.active ? ' active' : ''}" role="button" tabindex="-1"
+           data-focusable data-zone="settings-tabs" data-fid="tab:${t.id}" data-tab="${t.id}">
+        ${icon(t.icon)}<span>${esc(t.label)}</span>
+      </div>`,
+    ).join('');
+  }
+
+  #setTab(id) {
+    if (id === this.active) return;
+    if (this.capturing) this.cancelCapture();
+    this.active = id;
+    for (const el of this.tabsEl.children) el.classList.toggle('active', el.dataset.tab === id);
+    this.gamepad.setWatching(id === 'test');
+    this.#renderPanel();
+  }
+
+  #renderPanel() {
+    this.live.clear();
+    const render = {
+      device: () => this.#deviceHTML(),
+      gamepad: () => this.#gamepadHTML(),
+      test: () => this.#testHTML(),
+      navigation: () => this.#navigationHTML(),
+      background: () => this.#backgroundHTML(),
+      display: () => this.#displayHTML(),
+    }[this.active];
+    this.panelEl.innerHTML = render();
+    this.gamepad.setWatching(this.active === 'test');
+    if (this.active === 'test') this.#cacheLive();
+    this.panelEl.scrollTop = 0;
+  }
+
+  // ----------------------------------------------------------- bloques UI
+
+  #stepper(key, title, desc, valueText) {
+    return `
+      <div class="setting">
+        <div class="setting-info"><h3>${esc(title)}</h3><p>${esc(desc)}</p></div>
+        <div class="stepper">
+          <div class="step" role="button" tabindex="-1" data-focusable data-zone="settings-panel"
+               data-fid="step:${key}:-" data-act="step" data-key="${key}" data-delta="-1" aria-label="Disminuir">−</div>
+          <span class="value">${esc(valueText)}</span>
+          <div class="step" role="button" tabindex="-1" data-focusable data-zone="settings-panel"
+               data-fid="step:${key}:+" data-act="step" data-key="${key}" data-delta="1" aria-label="Aumentar">+</div>
+        </div>
+      </div>`;
+  }
+
+  #toggle(key, title, desc) {
+    const on = config.get(key);
+    return `
+      <div class="setting" role="switch" aria-checked="${on}" tabindex="-1" data-focusable
+           data-zone="settings-panel" data-fid="toggle:${key}" data-act="toggle" data-key="${key}">
+        <div class="setting-info"><h3>${esc(title)}</h3><p>${esc(desc)}</p></div>
+        <div class="switch${on ? ' on' : ''}"><i></i></div>
+      </div>`;
+  }
+
+  #action(act, fid, title, desc, iconName, extra = '') {
+    return `
+      <div class="setting" role="button" tabindex="-1" data-focusable data-zone="settings-panel"
+           data-fid="${fid}" data-act="${act}" ${extra}>
+        <div class="setting-info"><h3>${esc(title)}</h3><p>${esc(desc)}</p></div>
+        <span class="setting-icon">${icon(iconName)}</span>
+      </div>`;
+  }
+
+  // ----------------------------------------------------------- Dispositivo
+
+  #deviceHTML() {
+    const rows = [
+      ['Sistema', 'WebBox OS 0.1.0 (Fase 1)'],
+      ['Modelo simulado', 'WebBox Box — Android TV simulado'],
+      ['Ventana', `${window.innerWidth} × ${window.innerHeight} px (×${window.devicePixelRatio})`],
+      ['Pantalla del equipo', `${screen.width} × ${screen.height} px`],
+      ['Idioma', navigator.language || 'es'],
+      ['Contexto seguro (HTTPS/localhost)', window.isSecureContext ? 'Sí' : 'No'],
+      ['Gamepad API', this.gamepad.supported ? 'Disponible' : 'No disponible'],
+      ['Preferencias', storage.available ? 'Guardadas en localStorage' : 'Solo en memoria (sesión)'],
+      ['Navegador', navigator.userAgent],
+    ];
+    return `
+      <h2 class="panel-title">Información del dispositivo</h2>
+      <dl class="info-list">
+        ${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}
+      </dl>`;
+  }
+
+  // ----------------------------------------------------------------- Mando
+
+  #gamepadHTML() {
+    const pads = this.gamepad.getPads();
+    if (!this.gamepad.supported) {
+      return `<h2 class="panel-title">Estado del control remoto</h2>
+        <p class="notice">Este navegador no ofrece la Gamepad API.</p>`;
+    }
+    if (!pads.length) {
+      return `
+        <h2 class="panel-title">Estado del control remoto</h2>
+        <div class="status-card off">
+          <span class="dot"></span>
+          <div><h3>Sin mando conectado</h3>
+          <p>Conecta el mando desde los ajustes Bluetooth del equipo y pulsa cualquier botón.
+          El navegador solo lo muestra después de esa primera pulsación.</p></div>
+        </div>`;
+    }
+
+    const pad = pads[0];
+    const mapping = config.getMapping(pad.id);
+    const standard = pad.mapping === 'standard';
+    const list = pads
+      .map(
+        (p) => `
+        <div class="status-card on">
+          <span class="dot"></span>
+          <div><h3>${esc(p.name)}</h3>
+          <p>${p.buttonCount} botones · ${p.axisCount} ejes · mapeo del navegador: ${p.mapping || 'no estándar'}</p></div>
+        </div>`,
+      )
+      .join('');
+
+    const rows = ACTIONS.map((action) => {
+      const listening = this.capturing === action;
+      const text = listening
+        ? 'Pulsa un botón del mando… (Atrás/Esc cancela)'
+        : mapping[action].map((b) => buttonLabel(b, standard)).join(' o ');
+      return `
+        <div class="setting${listening ? ' listening' : ''}" role="button" tabindex="-1" data-focusable
+             data-zone="settings-panel" data-fid="map:${action}" data-act="remap" data-action="${action}">
+          <div class="setting-info"><h3>${esc(ACTION_LABELS[action])}</h3>
+          <p>Pulsa OK para cambiar el botón asignado</p></div>
+          <span class="pill${listening ? ' pulse' : ''}">${esc(text)}</span>
+        </div>`;
+    }).join('');
+
+    return `
+      <h2 class="panel-title">Estado del control remoto</h2>
+      ${list}
+      <h2 class="panel-title sub">Asignación de botones — ${esc(pad.name)}</h2>
+      ${rows}
+      ${this.#action('reset-mapping', 'map:reset', 'Restablecer asignación', 'Vuelve al mapeo por defecto de este mando', 'reset')}`;
+  }
+
+  // ----------------------------------------------------------------- Prueba
+
+  #testHTML() {
+    const pads = this.gamepad.getPads();
+    if (!pads.length) {
+      return `
+        <h2 class="panel-title">Prueba de botones</h2>
+        <div class="status-card off">
+          <span class="dot"></span>
+          <div><h3>No se detecta ningún mando</h3>
+          <p>Conéctalo por Bluetooth y pulsa un botón. Aquí verás cada botón y cada eje en vivo.</p></div>
+        </div>`;
+    }
+    const notice = `
+      <p class="notice test-notice">En esta pantalla el mando <b>no navega</b>, para que puedas probar todos sus botones.
+      Para salir con el mando, <b>mantén Atrás (o Inicio) durante 1 segundo</b>. El teclado y el mouse siguen funcionando.</p>`;
+    const cards = pads
+      .map((p) => {
+        const standard = p.mapping === 'standard';
+        const cells = Array.from({ length: p.buttonCount }, (_, i) =>
+          `<div class="btn-cell" data-b="${i}"><span>${esc(buttonLabel(i, standard))}</span></div>`).join('');
+        const axes = Array.from({ length: p.axisCount }, (_, i) =>
+          `<div class="axis" data-a="${i}"><label>Eje ${i}</label>
+             <div class="axis-bar"><i></i></div><output>0.00</output></div>`).join('');
+        return `
+        <section class="pad-card" data-pad="${p.index}">
+          <header><h3>${esc(p.name)}</h3>
+          <p>${esc(p.id)}</p>
+          <p>${p.buttonCount} botones · ${p.axisCount} ejes · mapeo: ${p.mapping || 'no estándar'}</p></header>
+          <div class="btn-grid">${cells}</div>
+          <div class="axes">${axes}</div>
+          <p class="last-btn">Último botón pulsado: <b data-last>—</b></p>
+        </section>`;
+      })
+      .join('');
+    return `<h2 class="panel-title">Prueba de botones</h2>${notice}${cards}`;
+  }
+
+  #cacheLive() {
+    for (const card of this.panelEl.querySelectorAll('[data-pad]')) {
+      this.live.set(Number(card.dataset.pad), {
+        cells: [...card.querySelectorAll('[data-b]')],
+        axes: [...card.querySelectorAll('[data-a]')].map((el) => ({
+          dot: el.querySelector('i'),
+          out: el.querySelector('output'),
+        })),
+        last: card.querySelector('[data-last]'),
+      });
+    }
+  }
+
+  #onFrame(frame) {
+    if (this.active !== 'test' || this.root.hidden) return;
+    for (const pad of frame) {
+      const view = this.live.get(pad.index);
+      if (!view) {
+        this.rerender(true);
+        return;
+      }
+      pad.buttons.forEach((b, i) => {
+        const cell = view.cells[i];
+        if (cell) cell.classList.toggle('down', b.pressed);
+      });
+      pad.axes.forEach((v, i) => {
+        const axis = view.axes[i];
+        if (!axis) return;
+        axis.dot.style.left = `${50 + v * 50}%`;
+        axis.out.textContent = v.toFixed(2);
+      });
+    }
+  }
+
+  #onRawButton({ index, button, pressed }) {
+    if (!pressed || this.active !== 'test') return;
+    const view = this.live.get(index);
+    if (view?.last) view.last.textContent = `Botón ${button}`;
+  }
+
+  /** Conexión/desconexión: refresca paneles que dependen del estado del mando. */
+  #liveRefresh() {
+    if (this.active === 'gamepad' || this.active === 'test') this.rerender(true);
+  }
+
+  // ------------------------------------------------------------ Navegación
+
+  #navigationHTML() {
+    const s = config.get('sensitivity');
+    return `
+      <h2 class="panel-title">Navegación</h2>
+      ${this.#stepper('sensitivity', 'Sensibilidad de navegación',
+        'Velocidad de repetición al mantener pulsada una dirección',
+        `${SENSITIVITY_LABELS[s - 1]} · ${REPEAT_INTERVALS[s - 1]} ms`)}
+      ${this.#toggle('stickNav', 'Navegar con la palanca izquierda', 'Usa los ejes 0 y 1 como flechas')}
+      ${this.#stepper('stickDeadzone', 'Zona muerta de la palanca',
+        'Cuánto hay que inclinarla antes de moverse (evita derivas)',
+        `${Math.round(config.get('stickDeadzone') * 100)} %`)}
+      ${this.#toggle('keyboardThrottle', 'Limitar repetición del teclado',
+        'Aplica la misma sensibilidad al mantener una flecha pulsada')}
+      <p class="notice">Las asignaciones de botones se cambian en la sección <b>Mando</b>.</p>`;
+  }
+
+  // ----------------------------------------------------------------- Fondo
+
+  #backgroundHTML() {
+    const current = config.get('background');
+    const tiles = BACKGROUNDS.map(
+      (b) => `
+      <div class="bg-tile${b.id === current ? ' selected' : ''}" role="button" tabindex="-1" data-focusable
+           data-zone="settings-panel" data-fid="bg:${b.id}" data-act="bg" data-id="${b.id}"
+           style="background-image:url('${b.file}')">
+        <span>${esc(b.name)}</span>
+        <span class="tick">${icon('check')}</span>
+      </div>`,
+    ).join('');
+    return `<h2 class="panel-title">Fondo de pantalla</h2><div class="bg-grid">${tiles}</div>`;
+  }
+
+  // ---------------------------------------------------------------- Pantalla
+
+  #displayHTML() {
+    return `
+      <h2 class="panel-title">Opciones de pantalla</h2>
+      ${this.#stepper('uiScale', 'Tamaño de la interfaz', 'Escala todo el sistema (útil según la distancia al televisor)',
+        `${config.get('uiScale')} %`)}
+      ${this.#stepper('overscan', 'Margen de seguridad (overscan)', 'Aleja los bordes si tu TV recorta la imagen',
+        `${config.get('overscan')} %`)}
+      ${this.#toggle('reduceMotion', 'Reducir animaciones', 'Desactiva transiciones y desplazamientos animados')}
+      ${this.#toggle('clock24', 'Reloj de 24 horas', 'Desactívalo para ver AM/PM')}
+      ${this.#toggle('showHints', 'Mostrar ayudas de control', 'Barra inferior con los botones de navegación')}
+      ${this.#action('fullscreen', 'act:fullscreen', 'Pantalla completa', 'Alterna pantalla completa (con teclado o mouse; también F11)', 'fullscreen')}
+      ${this.#action('reset-all', 'act:reset',
+        this.confirmReset ? 'Pulsa de nuevo para confirmar' : 'Restablecer todos los ajustes',
+        'Vuelve a los valores de fábrica (no borra los recientes)', 'reset')}`;
+  }
+
+  // ---------------------------------------------------------------- eventos
+
+  #onClick(e) {
+    const tab = e.target.closest('[data-tab]');
+    if (tab) {
+      this.#setTab(tab.dataset.tab);
+      return;
+    }
+    const el = e.target.closest('[data-act]');
+    if (!el) return;
+
+    switch (el.dataset.act) {
+      case 'step': {
+        const { key } = el.dataset;
+        const spec = STEPS[key];
+        if (!spec) break;
+        const next = round2(
+          Math.min(spec.max, Math.max(spec.min, config.get(key) + Number(el.dataset.delta) * spec.step)),
+        );
+        config.set(key, next);
+        this.rerender(true);
+        break;
+      }
+      case 'toggle':
+        config.set(el.dataset.key, !config.get(el.dataset.key));
+        this.rerender(true);
+        break;
+      case 'bg':
+        config.set('background', el.dataset.id);
+        this.rerender(true);
+        break;
+      case 'remap':
+        this.#startCapture(el.dataset.action);
+        break;
+      case 'reset-mapping': {
+        const pad = this.gamepad.getPads()[0];
+        if (pad) {
+          config.resetMapping(pad.id);
+          toast('Asignación restablecida');
+          this.rerender(true);
+        }
+        break;
+      }
+      case 'fullscreen':
+        this.#toggleFullscreen();
+        break;
+      case 'reset-all':
+        if (!this.confirmReset) {
+          this.confirmReset = true;
+          this.rerender(true);
+          setTimeout(() => {
+            if (!this.confirmReset) return;
+            this.confirmReset = false;
+            if (this.active === 'display') this.rerender(true);
+          }, 3500);
+        } else {
+          this.confirmReset = false;
+          config.reset();
+          toast('Ajustes restablecidos');
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  #startCapture(action) {
+    const pads = this.gamepad.getPads();
+    if (!pads.length) {
+      toast('Conecta un mando para cambiar su asignación');
+      return;
+    }
+    this.capturing = action;
+    this.gamepad.captureNext(
+      (button, pad) => {
+        config.setMapping(pad.id, action, [button]);
+        this.capturing = null;
+        toast(`${ACTION_LABELS[action]}: botón ${button}`);
+        this.rerender(true);
+      },
+      8000,
+      () => {
+        this.capturing = null;
+        toast('Tiempo agotado, asignación sin cambios');
+        this.rerender(true);
+      },
+    );
+    this.rerender(true);
+  }
+
+  async #toggleFullscreen() {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen();
+    } catch {
+      toast('El navegador no permitió pantalla completa desde aquí. Prueba con F11.');
+    }
+  }
+}
+    Object.assign(exports, { SettingsScreen });
+  };
+  __modules["js/core/media.js"] = function (module, exports, __require) {
+/**
+ * Utilidades puras para enlaces de video (sin DOM, fáciles de probar).
+ * Reconoce enlaces de YouTube (video, lista, shorts, embed, youtu.be, con tiempo)
+ * y archivos de video directos (.mp4, .webm...), locales o remotos.
+ */
+const YT_HOSTS = new Set([
+  'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com',
+  'youtube-nocookie.com', 'www.youtube-nocookie.com', 'youtu.be',
+]);
+const VIDEO_ID = /^[\w-]{11}$/;
+const LIST_ID = /^[\w-]{10,64}$/;
+const VIDEO_EXT = /\.(mp4|m4v|webm|ogv|ogg|mov|mkv)$/i;
+const RELATIVE = 'relative.invalid';
+
+/** "1m30s", "90" -> segundos */
+function parseTimeParam(value) {
+  if (!value) return 0;
+  if (/^\d+$/.test(value)) return Number(value);
+  const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/i.exec(value);
+  if (!m) return 0;
+  return (Number(m[1]) || 0) * 3600 + (Number(m[2]) || 0) * 60 + (Number(m[3]) || 0);
+}
+
+/**
+ * @returns {{type:'youtube',videoId:string|null,listId:string|null,start:number}
+ *          |{type:'video',src:string}|null}
+ */
+function parseMediaUrl(input) {
+  const raw = String(input ?? '').trim();
+  if (!raw) return null;
+  if (VIDEO_ID.test(raw)) return { type: 'youtube', videoId: raw, listId: null, start: 0 };
+
+  let url;
+  try {
+    url = new URL(raw, `http://${RELATIVE}/`);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.toLowerCase();
+
+  if (YT_HOSTS.has(host)) {
+    const parts = url.pathname.split('/').filter(Boolean);
+    let videoId = null;
+    if (host === 'youtu.be') videoId = parts[0];
+    else if (parts[0] === 'watch') videoId = url.searchParams.get('v');
+    else if (['embed', 'shorts', 'live', 'v'].includes(parts[0])) videoId = parts[1];
+    if (videoId && !VIDEO_ID.test(videoId)) videoId = null;
+
+    const list = url.searchParams.get('list');
+    const listId = list && LIST_ID.test(list) ? list : null;
+    if (!videoId && !listId) return null;
+
+    const start = parseTimeParam(url.searchParams.get('t') || url.searchParams.get('start'));
+    return { type: 'youtube', videoId, listId, start };
+  }
+
+  if (!/^https?:$/.test(url.protocol) || !VIDEO_EXT.test(url.pathname)) return null;
+  const src = host === RELATIVE ? (raw.includes('%') ? raw : encodeURI(raw)) : url.href;
+  return { type: 'video', src };
+}
+
+/** Miniatura automática de YouTube (null si solo hay lista). */
+function youtubeThumb(media) {
+  return media?.type === 'youtube' && media.videoId
+    ? `https://i.ytimg.com/vi/${media.videoId}/hqdefault.jpg`
+    : null;
+}
+
+/** 83 -> "1:23", 3700 -> "1:01:40" */
+function formatTime(total) {
+  const s = Math.max(0, Math.floor(Number(total) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+}
+    Object.assign(exports, { parseTimeParam, parseMediaUrl, youtubeThumb, formatTime });
+  };
+  __modules["js/library.js"] = function (module, exports, __require) {
+/**
+ * Biblioteca de contenido (YouTube y Películas comparten este módulo).
+ * Muestra filas por categoría, un botón "+ Agregar" y abre el reproductor.
+ * Lo agregado desde la interfaz se guarda en localStorage; lo de
+ * js/data/library.js se mezcla con ello (y se puede ocultar con "Eliminar").
+ */
+const { storage } = __require("js/core/storage.js");
+const { parseMediaUrl, youtubeThumb } = __require("js/core/media.js");
+const { icon } = __require("js/icons.js");
+const { esc } = __require("js/ui.js");
+
+const PALETTE = [
+  ['#7c2d12', '#f59e0b'], ['#1e3a8a', '#7c3aed'], ['#065f46', '#34d399'],
+  ['#831843', '#fb7185'], ['#0c4a6e', '#38bdf8'], ['#312e81', '#ec4899'],
+  ['#7f1d1d', '#f97316'], ['#134e4a', '#2dd4bf'],
+];
+
+function hash(text) {
+  let h = 0;
+  for (let i = 0; i < text.length; i += 1) h = (h * 31 + text.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+class LibraryScreen {
+  /**
+   * @param {{id:string, root:HTMLElement, defaults:object[], title:string, subtitle:string,
+   *   defaultCategory:string, cardStyle:'wide'|'poster', accept:string[], emptyText:string,
+   *   cardIcon:string, extraButtons?:{act:string,label:string,icon:string}[],
+   *   onPlay:(item:object, lib:LibraryScreen)=>void, onAdd:(lib:LibraryScreen)=>void,
+   *   onExtra?:(act:string)=>void}} opts
+   */
+  constructor(opts) {
+    Object.assign(this, opts);
+    this.userItems = this.#loadUser();
+    this.hidden = new Set(storage.get(`lib:${this.id}:hidden`, []));
+
+    this.root.addEventListener('click', (e) => {
+      const act = e.target.closest('[data-act]');
+      if (act?.dataset.act === 'lib-add') return this.onAdd(this);
+      if (act?.dataset.act === 'lib-ext') return this.onExtra?.(act.dataset.extra);
+      const card = e.target.closest('[data-kind="lib"]');
+      const item = card && this.items().find((i) => i.id === card.dataset.id);
+      if (item) this.onPlay(item, this);
+      return undefined;
+    });
+    // 'error' no burbujea: en captura quitamos las imágenes rotas y queda el degradado.
+    this.root.addEventListener('error', (e) => {
+      if (e.target.tagName === 'IMG') e.target.remove();
+    }, true);
+  }
+
+  // ------------------------------------------------------------------ datos
+
+  #loadUser() {
+    const saved = storage.get(`lib:${this.id}:items`, []);
+    return Array.isArray(saved) ? saved.filter((i) => i && i.id && i.title && (i.url || i.fileHandleKey)) : [];
+  }
+
+  #save() {
+    storage.set(`lib:${this.id}:items`, this.userItems);
+    storage.set(`lib:${this.id}:hidden`, [...this.hidden]);
+  }
+
+  /** Predeterminados (no ocultos) + agregados por el usuario. */
+  items() {
+    const defaults = this.defaults
+      .map((d, i) => ({ ...d, id: d.id ?? `def:${i}`, builtin: true }))
+      .filter((d) => d.title && d.url && !this.hidden.has(d.id));
+    return [...defaults, ...this.userItems].map((i) => ({
+      ...i,
+      category: (i.category || this.defaultCategory).trim() || this.defaultCategory,
+    }));
+  }
+
+  /** Devuelve el elemento creado, o un string con el error. */
+  add({ title, url, category, image }) {
+    const media = parseMediaUrl(url);
+    if (!media) return 'Enlace no válido. Usa un enlace de YouTube o un archivo .mp4 / .webm.';
+    if (!this.accept.includes(media.type)) {
+      return this.accept.includes('video')
+        ? 'Este enlace no es de video.'
+        : 'Aquí solo se aceptan enlaces de YouTube.';
+    }
+    const item = {
+      id: `u:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
+      title: String(title).trim().slice(0, 120),
+      url: String(url).trim(),
+      category: String(category || '').trim().slice(0, 40),
+      image: String(image || '').trim(),
+    };
+    this.userItems.push(item);
+    this.#save();
+    this.render();
+    return item;
+  }
+
+  /** Agrega un archivo local a Películas sin copiarlo ni modificarlo. */
+  addFileHandle({ title, fileHandleKey, category = this.defaultCategory }) {
+    if (this.id !== 'movies') return 'Los archivos locales solo se pueden agregar a Películas.';
+    if (!title || !fileHandleKey) return 'No se pudo identificar el archivo local.';
+    const item = {
+      id: `u:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
+      title: String(title).replace(/\.[^.]+$/, '').trim().slice(0, 120),
+      url: `webbox-file://${encodeURIComponent(fileHandleKey)}`,
+      fileHandleKey,
+      category: String(category || '').trim().slice(0, 40),
+      image: '',
+    };
+    this.userItems.push(item);
+    this.#save();
+    this.render();
+    return item;
+  }
+
+  remove(id) {
+    const before = this.userItems.length;
+    this.userItems = this.userItems.filter((i) => i.id !== id);
+    if (this.userItems.length === before) this.hidden.add(id); // era predeterminado
+    this.#save();
+    this.render();
+  }
+
+  fid(id) {
+    return `lib:${this.id}:${id}`;
+  }
+
+  categories() {
+    return [...new Set(this.items().map((i) => i.category))];
+  }
+
+  // ----------------------------------------------------------------- vista
+
+  render() {
+    const items = this.items();
+    const buttons = [
+      { act: 'lib-add', label: 'Agregar', icon: 'plus' },
+      ...(this.extraButtons ?? []).map((b) => ({ ...b, act: 'lib-ext' })),
+    ];
+    const actions = buttons
+      .map(
+        (b, i) => `
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="lib:${this.id}:btn${i}" data-act="${b.act}" data-extra="${esc(b.extra ?? '')}">
+          ${icon(b.icon)}${esc(b.label)}
+        </div>`,
+      )
+      .join('');
+
+    const rows = this.categories()
+      .map((cat) => {
+        const cards = items.filter((i) => i.category === cat).map((i) => this.#card(i)).join('');
+        return `
+          <section class="row" data-row="${esc(cat)}">
+            <h2 class="row-title"><span class="row-icon">${icon(this.cardIcon)}</span>${esc(cat)}</h2>
+            <div class="row-track">${cards}</div>
+          </section>`;
+      })
+      .join('');
+
+    this.root.innerHTML = `
+      <h1 class="screen-title">${esc(this.title)}</h1>
+      <p class="lib-sub">${esc(this.subtitle)}</p>
+      <div class="lib-actions">${actions}</div>
+      ${items.length ? rows : `<div class="lib-empty">${this.emptyText}</div>`}
+    `;
+  }
+
+  #card(item) {
+    const media = parseMediaUrl(item.url);
+    const img = item.image || youtubeThumb(media);
+    const [c1, c2] = PALETTE[hash(item.title) % PALETTE.length];
+    const kind = item.fileHandleKey ? 'Archivo local' : (media?.type === 'youtube' ? (media.videoId ? 'YouTube' : 'Lista de YouTube') : 'Archivo de video');
+    const poster = this.cardStyle === 'poster';
+    return `
+      <div class="card ${poster ? 'card--poster' : 'card--wide'}${img ? ' card--media' : ''}"
+           role="button" tabindex="-1" data-focusable data-zone="main"
+           data-kind="lib" data-id="${esc(item.id)}" data-fid="${esc(this.fid(item.id))}"
+           style="--c1:${c1};--c2:${c2}" aria-label="${esc(item.title)}">
+        ${img ? `<img class="card-img" src="${esc(img)}" alt="" loading="lazy" decoding="async">` : ''}
+        <span class="card-art">${icon(this.cardIcon)}</span>
+        <span class="card-label">${esc(item.title)}</span>
+        <span class="card-sub">${esc(kind)}</span>
+      </div>`;
+  }
+}
+    Object.assign(exports, { LibraryScreen });
+  };
+  __modules["js/player.js"] = function (module, exports, __require) {
+/**
+ * Reproductor a pantalla completa para YouTube (IFrame API oficial, con controles
+ * propios para mando/teclado) y para archivos de video (<video>).
+ *
+ * El iframe de YouTube no recibe clics ni teclas (pointer-events:none y disablekb):
+ * así el foco nunca se queda "atrapado" dentro y Atrás/Inicio siempre funcionan.
+ */
+const { parseMediaUrl, formatTime } = __require("js/core/media.js");
+const { icon } = __require("js/icons.js");
+const { esc, toast } = __require("js/ui.js");
+
+const IDLE_MS = 4000;
+const YT_ERRORS = {
+  2: 'El enlace del video no es válido.',
+  5: 'El reproductor de YouTube tuvo un error.',
+  100: 'El video no existe o es privado.',
+  101: 'El dueño del video no permite verlo fuera de YouTube.',
+  150: 'El dueño del video no permite verlo fuera de YouTube.',
+};
+
+let ytPromise = null;
+function loadYouTubeApi() {
+  if (window.YT?.Player) return Promise.resolve();
+  if (ytPromise) return ytPromise;
+  ytPromise = new Promise((resolve, reject) => {
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      prev?.();
+      resolve();
+    };
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    s.onerror = () => reject(new Error('sin conexión'));
+    document.head.appendChild(s);
+    setTimeout(() => reject(new Error('tiempo agotado')), 15000);
+  }).catch((err) => {
+    ytPromise = null;
+    throw err;
+  });
+  return ytPromise;
+}
+
+// ---------------------------------------------------------------- adaptadores
+
+class YouTubeAdapter {
+  constructor(host, media, { onState, onError }) {
+    this.host = host;
+    this.media = media;
+    this.onState = onState;
+    this.onError = onError;
+    this.p = null;
+  }
+
+  async init() {
+    await loadYouTubeApi();
+    const vars = {
+      autoplay: 1, controls: 0, disablekb: 1, rel: 0, modestbranding: 1,
+      playsinline: 1, fs: 0, iv_load_policy: 3,
+    };
+    if (/^https?:$/.test(location.protocol)) vars.origin = location.origin;
+    if (this.media.start) vars.start = this.media.start;
+    if (this.media.listId) {
+      vars.listType = 'playlist';
+      vars.list = this.media.listId;
+    }
+    await new Promise((resolve, reject) => {
+      setTimeout(() => reject(new Error('tiempo agotado')), 15000);
+      this.p = new window.YT.Player(this.host, {
+        host: 'https://www.youtube-nocookie.com',
+        width: '100%',
+        height: '100%',
+        videoId: this.media.videoId || undefined,
+        playerVars: vars,
+        events: {
+          onReady: () => resolve(),
+          onStateChange: (e) => this.onState(e.data),
+          onError: (e) => this.onError(YT_ERRORS[e.data] ?? 'No se pudo reproducir el video.'),
+        },
+      });
+    });
+  }
+
+  get isList() { return Boolean(this.media.listId); }
+  isPlaying() { return [1, 3].includes(this.p?.getPlayerState?.()); }
+  toggle() { if (this.isPlaying()) this.p.pauseVideo(); else this.p.playVideo(); }
+  seek(delta) { this.p.seekTo(Math.max(0, this.p.getCurrentTime() + delta), true); }
+  time() { return [this.p?.getCurrentTime?.() ?? 0, this.p?.getDuration?.() ?? 0]; }
+  isMuted() { return Boolean(this.p?.isMuted?.()); }
+  toggleMute() { if (this.isMuted()) this.p.unMute(); else this.p.mute(); }
+  next() { this.p.nextVideo(); }
+  prev() { this.p.previousVideo(); }
+  destroy() { try { this.p?.destroy(); } catch { /* ya no existe */ } }
+}
+
+class VideoAdapter {
+  constructor(host, media, { onState, onError }) {
+    this.host = host;
+    this.media = media;
+    this.onState = onState;
+    this.onError = onError;
+    this.v = null;
+  }
+
+  async init() {
+    const v = document.createElement('video');
+    v.playsInline = true;
+    v.preload = 'auto';
+    v.src = this.media.src;
+    v.addEventListener('playing', () => this.onState(1));
+    v.addEventListener('waiting', () => this.onState(3));
+    v.addEventListener('pause', () => this.onState(2));
+    v.addEventListener('ended', () => this.onState(0));
+    v.addEventListener('error', () =>
+      this.onError('No se pudo abrir el archivo. Revisa la ruta y que el formato sea compatible (.mp4 / .webm).'));
+    this.host.replaceWith(v);
+    this.v = v;
+    v.play().catch(() => { /* si el navegador bloquea el autoplay, queda en pausa */ });
+  }
+
+  get isList() { return false; }
+  isPlaying() { return !this.v.paused && !this.v.ended; }
+  toggle() { if (this.v.paused) this.v.play().catch(() => {}); else this.v.pause(); }
+  seek(delta) { this.v.currentTime = Math.max(0, this.v.currentTime + delta); }
+  time() { return [this.v.currentTime, Number.isFinite(this.v.duration) ? this.v.duration : 0]; }
+  isMuted() { return this.v.muted; }
+  toggleMute() { this.v.muted = !this.v.muted; }
+  next() {}
+  prev() {}
+  destroy() { this.v?.pause(); this.v?.removeAttribute('src'); this.v?.load(); }
+}
+
+class AudioAdapter {
+  constructor(host, media, { onState, onError }) {
+    this.host = host;
+    this.media = media;
+    this.onState = onState;
+    this.onError = onError;
+    this.a = null;
+  }
+
+  async init() {
+    const a = document.createElement('audio');
+    a.preload = 'auto';
+    a.src = this.media.src;
+    a.addEventListener('playing', () => this.onState(1));
+    a.addEventListener('waiting', () => this.onState(3));
+    a.addEventListener('pause', () => this.onState(2));
+    a.addEventListener('ended', () => this.onState(0));
+    a.addEventListener('error', () => this.onError('No se pudo reproducir el archivo de audio. Revisa su formato.'));
+    this.host.replaceWith(a);
+    this.a = a;
+    a.play().catch(() => { /* si el navegador bloquea el autoplay, queda en pausa */ });
+  }
+
+  isPlaying() { return Boolean(this.a && !this.a.paused && !this.a.ended); }
+  toggle() { if (this.a?.paused) this.a.play().catch(() => {}); else this.a?.pause(); }
+  seek(delta) {
+    if (this.a) this.a.currentTime = Math.max(0, this.a.currentTime + delta);
+  }
+  time() {
+    return [this.a?.currentTime ?? 0, Number.isFinite(this.a?.duration) ? this.a.duration : 0];
+  }
+  isMuted() { return Boolean(this.a?.muted); }
+  toggleMute() { if (this.a) this.a.muted = !this.a.muted; }
+  destroy() {
+    this.a?.pause();
+    this.a?.removeAttribute('src');
+    this.a?.load();
+  }
+}
+
+// ----------------------------------------------------------------- reproductor
+
+class Player {
+  /** @param {{el:HTMLElement, focus:import('./core/focus.js').FocusManager}} opts */
+  constructor({ el, focus }) {
+    this.el = el;
+    this.focus = focus;
+    this.isOpen = false;
+    this.adapter = null;
+    this.returnFid = null;
+    this.item = null;
+    this.onDelete = null;
+    this.confirmDelete = false;
+    this.poll = 0;
+    this.idleTimer = 0;
+
+    el.addEventListener('click', (e) => this.#onClick(e));
+    el.addEventListener('mousemove', () => this.#show());
+  }
+
+  async open(item, { onDelete } = {}) {
+    const media = parseMediaUrl(item.url);
+    if (!media) {
+      toast('Ese enlace no es válido. Elimínalo y vuelve a agregarlo.');
+      return;
+    }
+    return this.#open(item, media, { onDelete });
+  }
+
+  /** Abre un archivo local seleccionado desde Archivos o guardado en Películas. */
+  async openFile(file, { onDelete, title = file.name } = {}) {
+    const audio = file.type?.startsWith('audio/') || /\.(mp3|m4a|aac|wav|ogg|oga|flac|opus|wma)$/i.test(file.name || '');
+    const objectUrl = URL.createObjectURL(file);
+    return this.#open(
+      { title: title || file.name || 'Archivo local', url: objectUrl },
+      { type: audio ? 'audio' : 'video', src: objectUrl },
+      { onDelete, objectUrl },
+    );
+  }
+
+  async #open(item, media, { onDelete, objectUrl } = {}) {
+    if (this.isOpen) {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      return;
+    }
+    this.item = item;
+    this.onDelete = onDelete ?? null;
+    this.objectUrl = objectUrl ?? null;
+    this.confirmDelete = false;
+    this.returnFid = this.focus.current?.dataset.fid ?? null;
+    this.isOpen = true;
+    document.body.classList.add('player-open');
+
+    this.el.innerHTML = `
+      <div class="player-stage" data-stage><div data-host></div></div>
+      ${media.type === 'audio' ? `<div class="player-audio-label">${icon('music')}<span>Reproduciendo audio</span></div>` : ''}
+      <div class="player-msg" data-msg>Cargando…</div>
+      <div class="player-top"><span class="player-title">${esc(item.title)}</span></div>
+      <div class="player-controls">
+        <div class="player-bar">
+          <span data-cur>0:00</span>
+          <div class="player-track"><i data-fill></i></div>
+          <span data-dur>0:00</span>
+        </div>
+        <div class="player-buttons">
+          ${this.#btn('toggle', 'playsolid', 'Reproducir')}
+          ${this.#btn('back', 'back10', '10 s')}
+          ${this.#btn('fwd', 'fwd10', '10 s')}
+          ${media.listId ? this.#btn('prev', 'prev', 'Anterior') + this.#btn('next', 'next', 'Siguiente') : ''}
+          ${this.#btn('mute', 'volume', 'Sonido')}
+          ${media.type !== 'audio' ? this.#btn('full', 'fullscreen', 'Pantalla completa') : ''}
+          ${onDelete ? this.#btn('del', 'trash', 'Eliminar') : ''}
+          ${this.#btn('close', 'close', 'Cerrar')}
+        </div>
+      </div>`;
+    this.el.classList.toggle('is-audio', media.type === 'audio');
+    this.el.classList.remove('is-idle');
+    this.el.hidden = false;
+    this.focus.clear();
+    this.focus.pushScope(this.el);
+    this.focus.focusByFid('pl:toggle');
+    this.#show();
+
+    const Adapter = media.type === 'youtube' ? YouTubeAdapter : media.type === 'audio' ? AudioAdapter : VideoAdapter;
+    const adapter = new Adapter(this.el.querySelector('[data-host]'), media, {
+      onState: (state) => this.#onState(state),
+      onError: (message) => this.#fail(message),
+    });
+    this.adapter = adapter;
+    try {
+      await adapter.init();
+    } catch (err) {
+      if (this.adapter === adapter) {
+        this.#fail(media.type === 'youtube'
+          ? `No se pudo cargar YouTube (${err.message}). Revisa tu conexión a internet.`
+          : media.type === 'audio' ? 'No se pudo abrir el audio.' : 'No se pudo abrir el video.');
+      }
+      return;
+    }
+    if (this.adapter !== adapter) { adapter.destroy(); return; } // se cerró mientras cargaba
+    this.el.querySelector('[data-msg]')?.setAttribute('hidden', '');
+    this.poll = setInterval(() => this.#tick(), 500);
+  }
+
+  close({ restore = true } = {}) {
+    if (!this.isOpen) return;
+    clearInterval(this.poll);
+    clearTimeout(this.idleTimer);
+    if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    this.adapter?.destroy();
+    this.adapter = null;
+    if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
+    this.objectUrl = null;
+    this.isOpen = false;
+    document.body.classList.remove('player-open');
+    this.el.classList.remove('is-audio');
+    this.el.hidden = true;
+    this.el.innerHTML = '';
+    this.focus.popScope();
+    if (restore) this.focus.focusByFid(this.returnFid);
+  }
+
+  /**
+   * Llamar antes de procesar una acción de navegación.
+   * Devuelve true si la acción solo sirvió para mostrar los controles ocultos.
+   */
+  handleAction(action) {
+    if (!this.isOpen || action === 'back' || action === 'home') return false;
+    const wasIdle = this.el.classList.contains('is-idle');
+    this.#show();
+    return wasIdle;
+  }
+
+  // ---------------------------------------------------------------- interno
+
+  #btn(act, ico, label) {
+    return `
+      <div class="btn btn--sm" role="button" tabindex="-1" data-focusable data-zone="player"
+           data-fid="pl:${act}" data-act="pl-${act}" data-label>
+        <span data-ico>${icon(ico)}</span><span data-text>${esc(label)}</span>
+      </div>`;
+  }
+
+  #setBtn(act, ico, label) {
+    const b = this.el.querySelector(`[data-act="pl-${act}"]`);
+    if (!b) return;
+    b.querySelector('[data-ico]').innerHTML = icon(ico);
+    b.querySelector('[data-text]').textContent = label;
+  }
+
+  #show() {
+    if (!this.isOpen) return;
+    this.el.classList.remove('is-idle');
+    clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      if (this.adapter?.isPlaying()) this.el.classList.add('is-idle');
+    }, IDLE_MS);
+  }
+
+  #onState(state) {
+    const playing = state === 1 || state === 3;
+    this.#setBtn('toggle', playing ? 'pause' : 'playsolid', playing ? 'Pausa' : 'Reproducir');
+    if (!playing) this.#show();
+  }
+
+  #fail(message) {
+    const msg = this.el.querySelector('[data-msg]');
+    if (msg) {
+      msg.textContent = message;
+      msg.removeAttribute('hidden');
+    }
+    this.#show();
+    toast(message, 5000);
+  }
+
+  #tick() {
+    if (!this.adapter) return;
+    const [cur, dur] = this.adapter.time();
+    this.el.querySelector('[data-cur]').textContent = formatTime(cur);
+    this.el.querySelector('[data-dur]').textContent = dur ? formatTime(dur) : '--:--';
+    this.el.querySelector('[data-fill]').style.width = dur ? `${Math.min(100, (cur / dur) * 100)}%` : '0%';
+    this.#setBtn('mute', this.adapter.isMuted() ? 'mute' : 'volume', this.adapter.isMuted() ? 'Con sonido' : 'Silenciar');
+  }
+
+  #onClick(e) {
+    const a = this.adapter;
+    // Clic sobre el video = pausa/reproduce
+    if (e.target.closest('[data-stage]')) return a?.toggle();
+    const el = e.target.closest('[data-act]');
+    if (!el) return undefined;
+    this.#show();
+    switch (el.dataset.act) {
+      case 'pl-toggle': return a?.toggle();
+      case 'pl-back': return a?.seek(-10);
+      case 'pl-fwd': return a?.seek(10);
+      case 'pl-prev': return a?.prev();
+      case 'pl-next': return a?.next();
+      case 'pl-mute': return a?.toggleMute();
+      case 'pl-full': return this.#toggleFullscreen();
+      case 'pl-close': return this.close();
+      case 'pl-del':
+        if (!this.confirmDelete) {
+          this.confirmDelete = true;
+          this.#setBtn('del', 'trash', '¿Seguro? OK de nuevo');
+          return undefined;
+        }
+        this.onDelete?.(this.item);
+        return this.close({ restore: false });
+      default: return undefined;
+    }
+  }
+
+  #toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    else (this.el.requestFullscreen ?? this.el.webkitRequestFullscreen)?.call(this.el);
+  }
+}
+    Object.assign(exports, { Player });
+  };
+  __modules["js/dialog.js"] = function (module, exports, __require) {
+/**
+ * Formulario modal para agregar contenido. Los campos son elementos enfocables
+ * (se navegan con mando/flechas); OK sobre un campo abre el teclado del sistema.
+ */
+const { esc } = __require("js/ui.js");
+
+class Dialog {
+  /** @param {{el:HTMLElement, focus:import('./core/focus.js').FocusManager}} opts */
+  constructor({ el, focus }) {
+    this.el = el;
+    this.focus = focus;
+    this.isOpen = false;
+    this.returnFid = null;
+    this.busy = false;
+    this.spec = null;
+
+    el.addEventListener('click', (e) => this.#onClick(e));
+    el.addEventListener('keydown', (e) => {
+      if (e.target.tagName !== 'INPUT') return;
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.target.blur();
+        this.focus.move('down');
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.target.blur();
+      }
+    });
+  }
+
+  /**
+   * @param {{title:string, hint?:string, fields:{key:string,label:string,placeholder?:string,value?:string}[],
+   *   submitLabel?:string, onSubmit:(values:object)=>Promise<string|null>|string|null}} spec
+   */
+  open(spec) {
+    if (this.isOpen) return;
+    this.spec = spec;
+    this.returnFid = this.focus.current?.dataset.fid ?? null;
+    const fields = spec.fields
+      .map(
+        (f) => `
+        <div class="field" role="button" tabindex="-1" data-focusable data-zone="dialog"
+             data-fid="dlg:${f.key}" data-act="dlg-field">
+          <label>${esc(f.label)}</label>
+          <input type="text" name="${esc(f.key)}" value="${esc(f.value ?? '')}"
+                 placeholder="${esc(f.placeholder ?? '')}" autocomplete="off" autocapitalize="off" spellcheck="false">
+        </div>`,
+      )
+      .join('');
+    this.el.innerHTML = `
+      <div class="dialog-card">
+        <h2>${esc(spec.title)}</h2>
+        ${spec.hint ? `<p class="dialog-hint">${esc(spec.hint)}</p>` : ''}
+        ${fields}
+        <p class="dialog-error" data-error hidden></p>
+        <div class="dialog-actions">
+          <div class="btn" role="button" tabindex="-1" data-focusable data-zone="dialog" data-fid="dlg:save" data-act="dlg-save">${esc(spec.submitLabel ?? 'Guardar')}</div>
+          <div class="btn" role="button" tabindex="-1" data-focusable data-zone="dialog" data-fid="dlg:cancel" data-act="dlg-cancel">Cancelar</div>
+        </div>
+      </div>`;
+    this.el.hidden = false;
+    this.isOpen = true;
+    this.focus.clear();
+    this.focus.pushScope(this.el);
+    this.focus.focusFirst('[data-focusable]');
+  }
+
+  close({ restore = true } = {}) {
+    if (!this.isOpen) return;
+    document.activeElement?.blur?.();
+    this.isOpen = false;
+    this.el.hidden = true;
+    this.el.innerHTML = '';
+    this.focus.popScope();
+    return restore ? this.focus.focusByFid(this.returnFid) : false;
+  }
+
+  values() {
+    const out = {};
+    for (const input of this.el.querySelectorAll('input')) out[input.name] = input.value.trim();
+    return out;
+  }
+
+  #showError(message) {
+    const el = this.el.querySelector('[data-error]');
+    if (!el) return;
+    el.textContent = message ?? '';
+    el.hidden = !message;
+  }
+
+  async #onClick(e) {
+    const el = e.target.closest('[data-act]');
+    if (!el) return;
+    if (el.dataset.act === 'dlg-field') {
+      el.querySelector('input')?.focus();
+    } else if (el.dataset.act === 'dlg-cancel') {
+      this.close();
+    } else if (el.dataset.act === 'dlg-save') {
+      if (this.busy) return;
+      this.busy = true;
+      this.#showError('');
+      el.textContent = 'Guardando…';
+      try {
+        const error = await this.spec.onSubmit(this.values());
+        if (error) {
+          this.#showError(error);
+          el.textContent = this.spec.submitLabel ?? 'Guardar';
+        } else {
+          // El foco vuelve a la tarjeta nueva (returnFid); si no existe, al primer elemento.
+          if (!this.close()) this.focus.focusFirst('[data-zone="main"]');
+        }
+      } finally {
+        this.busy = false;
+      }
+    }
+  }
+}
+    Object.assign(exports, { Dialog });
+  };
+  __modules["js/fileSystem.js"] = function (module, exports, __require) {
+// fileSystem.js – Helpers for File System Access API with fallback to OPFS/IndexedDB
+// Sólo lectura para la versión base; las operaciones CRUD se implementan más abajo.
+// Documentación: https://developer.mozilla.org/en-US/docs/Web/API/File_System_Access_API
+
+// IndexedDB wrapper para almacenar manejadores (FileSystemDirectoryHandle/FileSystemFileHandle)
+const DB_NAME = 'webbox-fs';
+const STORE_NAME = 'handles';
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'path' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/** Guarda un manejador serializable bajo una clave de ruta */
+async function saveHandle(path, handle) {
+  const db = await openDb();
+  const tx = db.transaction(STORE_NAME, 'readwrite');
+  tx.objectStore(STORE_NAME).put({ path, handle });
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** Recupera un manejador previamente guardado */
+async function getHandle(path) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(STORE_NAME).objectStore(STORE_NAME).get(path);
+    req.onsuccess = () => resolve(req.result?.handle);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/** Elimina un manejador guardado (no elimina el archivo del equipo). */
+async function removeHandle(path) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).delete(path);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** Solicita al usuario una carpeta y la persiste */
+async function requestRootDirectory() {
+  if (!window.showDirectoryPicker) {
+    throw new Error('File System Access API no está disponible en este navegador.');
+  }
+  const handle = await window.showDirectoryPicker();
+  // guardamos bajo la clave "root" para poder volver a abrirla sin preguntar
+  await saveHandle('root', handle);
+  return handle;
+}
+
+/** Obtiene la carpeta raíz persistida o pide una nueva */
+async function getRootDirectory() {
+  let handle = await getHandle('root');
+  if (handle) return handle;
+  // si no está guardada, solicitar al usuario
+  return await requestRootDirectory();
+}
+
+/** Lista entradas (archivos + carpetas) del directorio dado */
+async function listEntries(dirHandle) {
+  const entries = [];
+  for await (const [name, child] of dirHandle.entries()) {
+    entries.push({ name, handle: child, kind: child.kind });
+  }
+  return entries;
+}
+
+/** Crea una subcarpeta */
+async function createFolder(parentHandle, name) {
+  return await parentHandle.getDirectoryHandle(name, { create: true });
+}
+
+/** Renombra una entrada (solo posible mediante copiar‑borrar) */
+async function renameEntry(entryHandle, parentHandle, newName) {
+  // Copiar el contenido (si es carpeta) o el archivo y luego eliminar el original
+  if (entryHandle.kind === 'file') {
+    const file = await entryHandle.getFile();
+    const newHandle = await parentHandle.getFileHandle(newName, { create: true });
+    const writable = await newHandle.createWritable();
+    await writable.write(await file.arrayBuffer());
+    await writable.close();
+  } else {
+    // carpeta: crear nueva y copiar recursivamente
+    const newDir = await parentHandle.getDirectoryHandle(newName, { create: true });
+    await copyFolderRecursive(entryHandle, newDir);
+  }
+  // eliminar original
+  await parentHandle.removeEntry(entryHandle.name);
+}
+
+/** Copia recursivamente el contenido de una carpeta */
+async function copyFolderRecursive(srcHandle, dstHandle) {
+  for await (const [name, child] of srcHandle.entries()) {
+    if (child.kind === 'file') {
+      const file = await child.getFile();
+      const newFile = await dstHandle.getFileHandle(name, { create: true });
+      const writable = await newFile.createWritable();
+      await writable.write(await file.arrayBuffer());
+      await writable.close();
+    } else {
+      const newSub = await dstHandle.getDirectoryHandle(name, { create: true });
+      await copyFolderRecursive(child, newSub);
+    }
+  }
+}
+
+/** Copia una entrada a otro directorio */
+async function copyEntry(entryHandle, targetDirHandle) {
+  if (entryHandle.kind === 'file') {
+    const file = await entryHandle.getFile();
+    const newHandle = await targetDirHandle.getFileHandle(entryHandle.name, { create: true });
+    const writable = await newHandle.createWritable();
+    await writable.write(await file.arrayBuffer());
+    await writable.close();
+  } else {
+    const newDir = await targetDirHandle.getDirectoryHandle(entryHandle.name, { create: true });
+    await copyFolderRecursive(entryHandle, newDir);
+  }
+}
+
+/** Mueve una entrada a otro directorio (copia + elimina) */
+async function moveEntry(entryHandle, srcParentHandle, targetDirHandle) {
+  await copyEntry(entryHandle, targetDirHandle);
+  await srcParentHandle.removeEntry(entryHandle.name, { recursive: entryHandle.kind === 'directory' });
+}
+
+/** Elimina una entrada (con confirmación externa) */
+async function deleteEntry(parentHandle, name, isDirectory) {
+  await parentHandle.removeEntry(name, { recursive: isDirectory });
+}
+
+// Fallback simple para navegadores sin File System Access API: usar OPFS bajo "webbox-fallback"
+async function getFallbackRoot() {
+  const root = await navigator.storage.getDirectory();
+  return await root.getDirectoryHandle('webbox-fallback', { create: true });
+}
+
+async function fallbackUploadFiles(files) {
+  const dir = await getFallbackRoot();
+  for (const f of files) {
+    const handle = await dir.getFileHandle(f.name, { create: true });
+    const writable = await handle.createWritable();
+    await writable.write(await f.arrayBuffer());
+    await writable.close();
+  }
+}
+    Object.assign(exports, { saveHandle, getHandle, removeHandle, requestRootDirectory, getRootDirectory, listEntries, createFolder, renameEntry, copyEntry, moveEntry, deleteEntry, getFallbackRoot, fallbackUploadFiles });
+  };
+  __modules["js/files.js"] = function (module, exports, __require) {
+/**
+ * Pantalla Archivos: explorador local de solo lectura para mando, teclado y mouse.
+ * Usa File System Access API en Chromium (Chrome / Edge) y conserva la carpeta
+ * seleccionada en IndexedDB mediante los helpers de js/fileSystem.js.
+ */
+const { requestRootDirectory, listEntries } = __require("js/fileSystem.js");
+const { icon } = __require("js/icons.js");
+const { esc, toast } = __require("js/ui.js");
+
+const VIDEO_EXT = new Set(['mp4', 'm4v', 'webm', 'ogv', 'mov', 'mkv']);
+const AUDIO_EXT = new Set(['mp3', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'flac', 'opus', 'wma']);
+const IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'avif', 'svg']);
+
+function extension(name) {
+  return String(name).split('.').pop().toLowerCase();
+}
+
+function fileType(name) {
+  const ext = extension(name);
+  if (VIDEO_EXT.has(ext)) return 'video';
+  if (AUDIO_EXT.has(ext)) return 'audio';
+  if (IMAGE_EXT.has(ext)) return 'image';
+  if (['pdf'].includes(ext)) return 'pdf';
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'archive';
+  if (['txt', 'md', 'doc', 'docx', 'odt', 'rtf'].includes(ext)) return 'document';
+  return 'file';
+}
+
+function typeIcon(kind) {
+  return ({
+    directory: 'folder', video: 'film', audio: 'music', image: 'photo',
+    pdf: 'book', document: 'book', archive: 'book', file: 'book',
+  })[kind] ?? 'book';
+}
+
+function readableSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+class FilesScreen {
+  /**
+   * @param {{root:HTMLElement, focus:object, onOpenMedia:(file:File)=>void,
+   *   onAddMovie:(handle:FileSystemFileHandle,name:string)=>Promise<void>}} opts
+   */
+  constructor({ root, focus, onOpenMedia, onAddMovie }) {
+    this.root = root;
+    this.focus = focus;
+    this.onOpenMedia = onOpenMedia;
+    this.onAddMovie = onAddMovie;
+    this.stack = [];
+    this.entries = [];
+    this.view = 'grid';
+    this.loading = false;
+    this.viewerOpen = false;
+    this.viewerUrl = null;
+    this.viewerReturnFid = null;
+    this.viewer = document.getElementById('file-viewer');
+
+    this.root.addEventListener('click', (e) => this.#onClick(e));
+    this.viewer?.addEventListener('click', (e) => {
+      if (e.target.closest('[data-act="file-viewer-close"]')) this.closeViewer();
+    });
+  }
+
+  render() {
+    this.root.innerHTML = `
+      <h1 class="screen-title">Archivos</h1>
+      <p class="files-sub">Explora carpetas y reproduce tus archivos multimedia con el mando.</p>
+      <div class="files-toolbar">
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:pick" data-act="files-pick">${icon('folder')}Elegir carpeta</div>
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:up" data-act="files-up" aria-disabled="true">${icon('back')}Atrás</div>
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:list" data-act="files-list">${icon('book')}Lista</div>
+        <div class="btn is-selected" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:grid" data-act="files-grid">${icon('apps')}Cuadrícula</div>
+      </div>
+      <div class="files-location">
+        <span class="files-location-label">Ubicación</span>
+        <strong data-files-path>Sin carpeta seleccionada</strong>
+        <span class="files-count" data-files-count></span>
+      </div>
+      <div class="files-content" data-files-content>
+        <div class="files-empty">
+          <span class="files-empty-icon">${icon('folder')}</span>
+          <h2>Selecciona una carpeta</h2>
+          <p>Elige una carpeta del equipo para ver sus archivos y subcarpetas.</p>
+          <p class="files-api-note">La lectura local está disponible en Chrome y Edge. No se modifica ningún archivo.</p>
+        </div>
+      </div>`;
+    this.#updateToolbar();
+    this.#updatePath();
+  }
+
+  focusEntry() {
+    this.focus.focusFirst('[data-zone="main"]');
+  }
+
+  async handleBack() {
+    if (this.viewerOpen) {
+      this.closeViewer();
+      return true;
+    }
+    if (this.stack.length > 1) {
+      await this.goUp();
+      return true;
+    }
+    return false;
+  }
+
+  async chooseFolder() {
+    if (this.loading) return;
+    try {
+      const handle = await requestRootDirectory();
+      this.stack = [{ handle, name: handle.name || 'Carpeta' }];
+      await this.#readCurrent();
+    } catch (err) {
+      if (err?.name === 'AbortError') return;
+      const message = err?.message || 'No se pudo abrir la carpeta.';
+      this.#setMessage(message, true);
+      toast(message, 4500);
+    }
+  }
+
+  async goUp() {
+    if (this.stack.length <= 1 || this.loading) return;
+    this.stack.pop();
+    await this.#readCurrent();
+  }
+
+  async #readCurrent() {
+    const current = this.stack.at(-1);
+    if (!current) return;
+    this.loading = true;
+    this.#updateToolbar();
+    this.#updatePath();
+    const content = this.root.querySelector('[data-files-content]');
+    if (content) content.innerHTML = '<div class="files-empty"><h2>Abriendo carpeta…</h2><p>Obteniendo el contenido.</p></div>';
+
+    try {
+      this.entries = await listEntries(current.handle);
+      this.entries.sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
+        return a.name.localeCompare(b.name, 'es', { sensitivity: 'base', numeric: true });
+      });
+      this.#renderEntries();
+    } catch (err) {
+      this.entries = [];
+      this.#setMessage(err?.name === 'NotAllowedError'
+        ? 'El navegador necesita permiso para leer esta carpeta. Vuelve a elegirla.'
+        : `No se pudo leer la carpeta: ${err?.message || 'error desconocido'}`, true);
+    } finally {
+      this.loading = false;
+      this.#updateToolbar();
+      this.#updatePath();
+    }
+  }
+
+  #renderEntries() {
+    const content = this.root.querySelector('[data-files-content]');
+    const count = this.root.querySelector('[data-files-count]');
+    if (!content) return;
+
+    if (count) count.textContent = `${this.entries.length} elemento${this.entries.length === 1 ? '' : 's'}`;
+    if (!this.entries.length) {
+      content.innerHTML = '<div class="files-empty"><h2>Esta carpeta está vacía</h2><p>No se encontraron archivos ni subcarpetas.</p></div>';
+      return;
+    }
+
+    const cards = this.entries.map((entry, index) => {
+      const kind = entry.kind === 'directory' ? 'directory' : fileType(entry.name);
+      const isVideo = kind === 'video';
+      const fid = `files:item:${index}`;
+      const meta = entry.kind === 'directory' ? 'Carpeta' : this.#metaLabel(kind, entry.name);
+      return `
+        <article class="file-card${isVideo ? ' file-card--video' : ''}">
+          <div class="file-entry" role="button" tabindex="-1" data-focusable data-zone="main"
+               data-fid="${fid}" data-act="file-open" data-index="${index}"
+               aria-label="${esc(entry.name)}">
+            <span class="file-entry-icon file-entry-icon--${kind}">${icon(typeIcon(kind))}</span>
+            <span class="file-entry-name">${esc(entry.name)}</span>
+            <span class="file-entry-meta">${esc(meta)}</span>
+          </div>
+          ${isVideo ? `<div class="file-card-actions">
+            <div class="btn btn--sm" role="button" tabindex="-1" data-focusable data-zone="main"
+                 data-fid="files:add:${index}" data-act="file-add-movie" data-index="${index}">
+              ${icon('plus')}Agregar a Películas
+            </div>
+          </div>` : ''}
+        </article>`;
+    }).join('');
+
+    content.innerHTML = `<div class="files-${this.view}">${cards}</div>`;
+  }
+
+  #metaLabel(kind, name) {
+    const labels = { video: 'Video', audio: 'Audio', image: 'Imagen', pdf: 'PDF', document: 'Documento', archive: 'Archivo comprimido', file: 'Archivo' };
+    return `${labels[kind] || 'Archivo'} · ${extension(name).toUpperCase()}`;
+  }
+
+  #updateToolbar() {
+    const up = this.root.querySelector('[data-act="files-up"]');
+    if (up) up.setAttribute('aria-disabled', String(this.stack.length <= 1 || this.loading));
+    const list = this.root.querySelector('[data-act="files-list"]');
+    const grid = this.root.querySelector('[data-act="files-grid"]');
+    list?.classList.toggle('is-selected', this.view === 'list');
+    grid?.classList.toggle('is-selected', this.view === 'grid');
+  }
+
+  #updatePath() {
+    const path = this.root.querySelector('[data-files-path]');
+    if (path) path.textContent = this.stack.length
+      ? this.stack.map((part) => part.name).join('  /  ')
+      : 'Sin carpeta seleccionada';
+  }
+
+  #setMessage(message, isError = false) {
+    const content = this.root.querySelector('[data-files-content]');
+    if (content) {
+      content.innerHTML = `<div class="files-empty${isError ? ' files-empty--error' : ''}"><h2>${isError ? 'No se pudo abrir' : 'Archivos'}</h2><p>${esc(message)}</p></div>`;
+    }
+  }
+
+  async #onClick(e) {
+    const action = e.target.closest('[data-act]');
+    if (!action) return;
+    switch (action.dataset.act) {
+      case 'files-pick':
+        await this.chooseFolder();
+        break;
+      case 'files-up':
+        await this.goUp();
+        break;
+      case 'files-list':
+        this.#setView('list');
+        break;
+      case 'files-grid':
+        this.#setView('grid');
+        break;
+      case 'file-open':
+        await this.#openEntry(Number(action.dataset.index));
+        break;
+      case 'file-add-movie':
+        await this.#addMovie(Number(action.dataset.index));
+        break;
+      default:
+        break;
+    }
+  }
+
+  #setView(view) {
+    if (this.view === view) return;
+    const fid = this.focus.current?.dataset.fid;
+    this.view = view;
+    this.#renderEntries();
+    this.#updateToolbar();
+    if (!this.focus.focusByFid(fid)) this.focus.focusFirst('[data-zone="main"]');
+  }
+
+  async #openEntry(index) {
+    const entry = this.entries[index];
+    if (!entry || this.loading) return;
+    if (entry.kind === 'directory') {
+      this.stack.push({ handle: entry.handle, name: entry.name });
+      await this.#readCurrent();
+      this.focus.focusFirst('[data-zone="main"]');
+      return;
+    }
+
+    const kind = fileType(entry.name);
+    if (!['video', 'audio', 'image'].includes(kind)) {
+      toast('Este tipo de archivo no tiene un visor integrado.');
+      return;
+    }
+
+    try {
+      const file = await entry.handle.getFile();
+      if (kind === 'image') this.openImage(file, entry.name);
+      else this.onOpenMedia?.(file, entry.name);
+    } catch (err) {
+      toast(`No se pudo abrir el archivo: ${err?.message || 'permiso denegado'}`, 4000);
+    }
+  }
+
+  async #addMovie(index) {
+    const entry = this.entries[index];
+    if (!entry || entry.kind !== 'file' || fileType(entry.name) !== 'video') return;
+    try {
+      await this.onAddMovie?.(entry.handle, entry.name);
+    } catch (err) {
+      toast(`No se pudo agregar a Películas: ${err?.message || 'error desconocido'}`, 4000);
+    }
+  }
+
+  openImage(file, name) {
+    if (!this.viewer) return;
+    this.closeViewer({ restore: false });
+    this.viewerReturnFid = this.focus.current?.dataset.fid ?? null;
+    this.viewerUrl = URL.createObjectURL(file);
+    this.viewer.innerHTML = `
+      <div class="file-viewer-top"><span>${esc(name)}</span>
+        <div class="btn btn--sm" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="files:image-close" data-act="file-viewer-close">${icon('close')}Cerrar</div>
+      </div>
+      <div class="file-viewer-stage"><img src="${this.viewerUrl}" alt="${esc(name)}"></div>`;
+    this.viewer.hidden = false;
+    this.viewerOpen = true;
+    this.focus.clear();
+    this.focus.pushScope(this.viewer);
+    this.focus.focusFirst('[data-focusable]');
+  }
+
+  closeViewer({ restore = true } = {}) {
+    if (!this.viewerOpen) return;
+    this.viewerOpen = false;
+    this.viewer.hidden = true;
+    this.viewer.innerHTML = '';
+    this.focus.popScope();
+    if (this.viewerUrl) URL.revokeObjectURL(this.viewerUrl);
+    this.viewerUrl = null;
+    if (restore && this.viewerReturnFid) this.focus.focusByFid(this.viewerReturnFid);
+    this.viewerReturnFid = null;
+  }
+}
+    Object.assign(exports, { FilesScreen });
+  };
+  __modules["js/data/library.js"] = function (module, exports, __require) {
+/**
+ * Contenido inicial de las bibliotecas. Aquí puedes agregar cosas editando el
+ * archivo, o directamente desde la interfaz con el botón "+ Agregar"
+ * (lo agregado desde la interfaz se guarda en el navegador).
+ *
+ * Campos:  title (obligatorio) · url (obligatorio) · category (fila donde aparece)
+ *          image (opcional: póster/miniatura; en YouTube se usa la miniatura sola)
+ *
+ * url acepta:
+ *   - YouTube: https://www.youtube.com/watch?v=XXXXXXXXXXX  (también listas y youtu.be)
+ *   - Archivo de video: assets/movies/mi-pelicula.mp4  (.mp4 .webm .ogv .mov .mkv)
+ */
+
+const YOUTUBE_DEFAULTS = [
+  // { title: 'Mi video', url: 'https://www.youtube.com/watch?v=XXXXXXXXXXX', category: 'Favoritos' },
+];
+
+const MOVIES_DEFAULTS = [
+  // { title: 'Mi película', url: 'assets/movies/mi-pelicula.mp4', category: 'Acción', image: 'assets/movies/mi-pelicula.jpg' },
+];
+    Object.assign(exports, { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS });
+  };
+  __modules["js/main.js"] = function (module, exports, __require) {
+/**
+ * WebBox OS — punto de entrada.
+ * Une entradas (teclado, mando, mouse), foco, router de pantallas y ajustes.
+ *
+ * Flujo: teclado/mando -> bus 'action' -> onAction() -> FocusManager / router.
+ */
+const { bus } = __require("js/core/events.js");
+const { config } = __require("js/core/config.js");
+const { FocusManager } = __require("js/core/focus.js");
+const { GamepadManager } = __require("js/input/gamepad.js");
+const { KeyboardInput } = __require("js/input/keyboard.js");
+const { Launcher } = __require("js/launcher.js");
+const { SettingsScreen } = __require("js/settings.js");
+const { LibraryScreen } = __require("js/library.js");
+const { Player } = __require("js/player.js");
+const { Dialog } = __require("js/dialog.js");
+const { FilesScreen } = __require("js/files.js");
+const { getHandle, saveHandle, removeHandle } = __require("js/fileSystem.js");
+const { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS } = __require("js/data/library.js");
+const { parseMediaUrl } = __require("js/core/media.js");
+const { BACKGROUNDS } = __require("js/data/apps.js");
+const { hydrateIcons, icon } = __require("js/icons.js");
+const { esc, toast } = __require("js/ui.js");
+
+const $ = (selector, root = document) => root.querySelector(selector);
+
+const INPUT_LABELS = { keyboard: 'Teclado', gamepad: 'Mando', mouse: 'Mouse' };
+
+class WebBoxOS {
+  constructor() {
+    this.shell = $('#shell');
+    this.overlay = $('#overlay');
+    this.sidebar = $('#sidebar');
+    this.screens = {
+      home: $('#screen-home'),
+      apps: $('#screen-apps'),
+      youtube: $('#screen-youtube'),
+      movies: $('#screen-movies'),
+      files: $('#screen-files'),
+      settings: $('#screen-settings'),
+    };
+    this.current = 'home';
+    this.overlayOpen = false;
+    this.overlayReturnFid = null;
+    this.lastPointerMove = 0;
+    this.cursorTimer = 0;
+
+    this.focus = new FocusManager(this.shell);
+    this.gamepad = new GamepadManager();
+    this.keyboard = new KeyboardInput();
+    this.launcher = new Launcher({
+      homeEl: this.screens.home,
+      appsEl: this.screens.apps,
+      onOpen: (item) => this.openItem(item),
+    });
+    this.player = new Player({ el: $('#player'), focus: this.focus });
+    this.dialog = new Dialog({ el: $('#dialog'), focus: this.focus });
+    const common = {
+      onPlay: (item, lib) => this.#playLibraryItem(item, lib),
+      onAdd: (lib) => this.#openAddDialog(lib),
+      onExtra: (extra) => {
+        if (extra === 'youtube-site') window.open('https://www.youtube.com/', '_blank', 'noopener');
+      },
+    };
+    this.libraries = {
+      youtube: new LibraryScreen({
+        ...common,
+        id: 'youtube',
+        root: this.screens.youtube,
+        defaults: YOUTUBE_DEFAULTS,
+        title: 'YouTube',
+        subtitle:
+          'YouTube dentro de WebBox OS, con controles para mando. Agrega enlaces de videos o listas y reprodúcelos aquí.',
+        defaultCategory: 'Mis videos',
+        cardStyle: 'wide',
+        cardIcon: 'youtube',
+        accept: ['youtube'],
+        extraButtons: [{ label: 'Abrir youtube.com', icon: 'external', extra: 'youtube-site' }],
+        emptyText:
+          '<b>Aún no hay videos.</b><br>Pulsa <b>Agregar</b>, pega un enlace de YouTube (video o lista) y listo. ' +
+          'También puedes dejarlos fijos en <b>js/data/library.js</b>.',
+      }),
+      movies: new LibraryScreen({
+        ...common,
+        id: 'movies',
+        root: this.screens.movies,
+        defaults: MOVIES_DEFAULTS,
+        title: 'Películas',
+        subtitle: 'Tu biblioteca. Agrega enlaces de YouTube, archivos del equipo desde Archivos o rutas de video locales.',
+        defaultCategory: 'Mis películas',
+        cardStyle: 'poster',
+        cardIcon: 'film',
+        accept: ['youtube', 'video'],
+        emptyText:
+          '<b>Aquí irán tus películas.</b><br>Pulsa <b>Agregar</b> para guardar un enlace o abre <b>Archivos</b> ' +
+          'y usa <b>Agregar a Películas</b> sobre cualquier video del equipo.',
+      }),
+    };
+    this.files = new FilesScreen({
+      root: this.screens.files,
+      focus: this.focus,
+      onOpenMedia: (file) => this.player.openFile(file),
+      onAddMovie: (handle, name) => this.#addMovieFromFiles(handle, name),
+    });
+    this.settings = new SettingsScreen({
+      root: this.screens.settings,
+      focus: this.focus,
+      gamepad: this.gamepad,
+    });
+  }
+
+  start() {
+    hydrateIcons();
+    this.launcher.render();
+    for (const lib of Object.values(this.libraries)) lib.render();
+    this.files.render();
+    this.settings.render();
+    this.#applyDisplay();
+    this.#bindEvents();
+    this.#startClock();
+    this.#updatePadChip();
+
+    // En la prueba de botones el mando no navega (se sale manteniendo Atrás 1 s).
+    this.gamepad.testModeProvider = () => this.settings.isTestActive() && !this.overlayOpen;
+    this.gamepad.start();
+    this.keyboard.start();
+
+    this.navigate('home', { enter: true });
+    console.info('[WebBox OS] Launcher listo. Gamepad API:', this.gamepad.supported ? 'sí' : 'no');
+  }
+
+  // ------------------------------------------------------------- eventos
+
+  #bindEvents() {
+    bus.on('action', ({ action, source }) => this.onAction(action, source));
+
+    bus.on('gamepad:connect', ({ name }) => {
+      this.#updatePadChip();
+      toast(`Mando conectado: ${name}`);
+    });
+    bus.on('gamepad:disconnect', ({ name }) => {
+      this.#updatePadChip();
+      toast(`Mando desconectado: ${name}`);
+    });
+    bus.on('config:change', () => {
+      this.#applyDisplay();
+    });
+
+    // Menú lateral: cambia de pantalla al recibir el foco; OK entra al contenido.
+    this.sidebar.addEventListener('tvfocus', (e) => {
+      const item = e.target.closest('[data-screen]');
+      if (item) this.navigate(item.dataset.screen);
+    });
+    this.sidebar.addEventListener('click', (e) => {
+      const item = e.target.closest('[data-screen]');
+      if (item) this.navigate(item.dataset.screen, { enter: true });
+    });
+    bus.on('focus:change', () => this.#syncSidebar());
+
+    // Overlay de aplicación abierta
+    this.overlay.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-act]');
+      if (!el) return;
+      if (el.dataset.act === 'ov-back') this.back();
+      if (el.dataset.act === 'ov-home') this.home();
+    });
+
+    // Mouse: el puntero mueve el foco; el clic activa el elemento.
+    document.addEventListener('mousemove', () => {
+      this.lastPointerMove = performance.now();
+      document.body.classList.remove('cursor-hidden');
+      clearTimeout(this.cursorTimer);
+      this.cursorTimer = setTimeout(() => document.body.classList.add('cursor-hidden'), 3000);
+    });
+    document.addEventListener('mouseover', (e) => {
+      // Solo si el mouse realmente se movió (no por desplazamientos animados).
+      if (performance.now() - this.lastPointerMove > 120) return;
+      const el = e.target.closest?.('[data-focusable]');
+      if (el && this.focus.isInScope(el)) this.focus.set(el, { scroll: false });
+    });
+    document.addEventListener(
+      'click',
+      (e) => {
+        const el = e.target.closest?.('[data-focusable]');
+        if (!el || !this.focus.isInScope(el)) return;
+        if (e.isTrusted) this.#setLastInput('mouse');
+        this.focus.set(el, { scroll: false });
+      },
+      true,
+    );
+    document.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  /** Acción unificada de navegación, venga de donde venga. */
+  onAction(action, source) {
+    this.#setLastInput(source);
+    document.body.classList.add('cursor-hidden');
+
+    // Con el reproductor abierto, la primera pulsación solo muestra los controles ocultos.
+    if (this.player.handleAction(action)) return;
+
+    switch (action) {
+      case 'up':
+      case 'down':
+      case 'left':
+      case 'right':
+        this.focus.move(action);
+        break;
+      case 'ok':
+        this.focus.activate();
+        break;
+      case 'back':
+        this.back();
+        break;
+      case 'home':
+        this.home();
+        break;
+      default:
+        break;
+    }
+  }
+
+  // --------------------------------------------------------------- router
+
+  /**
+   * Cambia de pantalla. `enter` además mueve el foco al contenido.
+   */
+  navigate(name, { enter = false } = {}) {
+    if (!this.screens[name]) return;
+
+    if (name !== this.current) {
+      for (const [key, el] of Object.entries(this.screens)) el.hidden = key !== name;
+      const el = this.screens[name];
+      el.classList.remove('is-entering');
+      void el.offsetWidth; // reinicia la animación
+      el.classList.add('is-entering');
+      this.current = name;
+      if (name === 'settings') this.settings.refresh();
+      for (const item of this.sidebar.querySelectorAll('[data-screen]')) {
+        item.classList.toggle('is-current', item.dataset.screen === name);
+      }
+    }
+    if (enter) this.#enterScreen(name);
+  }
+
+  #enterScreen(name) {
+    if (name === 'settings') {
+      this.settings.focusEntry();
+    } else if (name === 'files') {
+      this.files.focusEntry();
+    } else {
+      this.focus.focusFirst('[data-zone="main"]');
+    }
+  }
+
+  async back() {
+    if (this.dialog.isOpen) {
+      this.dialog.close();
+      return;
+    }
+    if (this.player.isOpen) {
+      this.player.close();
+      return;
+    }
+    if (this.overlayOpen) {
+      this.closeOverlay();
+      return;
+    }
+    if (this.current === 'files' && await this.files.handleBack()) return;
+    if (this.settings.handleBack()) return;
+    if (this.current !== 'home') {
+      this.navigate('home', { enter: true });
+      return;
+    }
+    // Ya en inicio: Atrás vuelve a la primera tarjeta.
+    if (this.focus.current?.dataset.zone !== 'main') {
+      this.focus.focusFirst('[data-zone="main"]');
+    } else {
+      toast('Estás en el inicio');
+    }
+  }
+
+  home() {
+    if (this.dialog.isOpen) this.dialog.close({ restore: false });
+    if (this.player.isOpen) this.player.close({ restore: false });
+    if (this.files?.viewerOpen) this.files.closeViewer({ restore: false });
+    if (this.overlayOpen) this.closeOverlay({ restore: false });
+    if (this.settings.capturing) this.settings.cancelCapture();
+    this.navigate('home');
+    this.screens.home.scrollTo({ top: 0 });
+    this.#enterScreen('home');
+  }
+
+  // -------------------------------------------------------------- overlay
+
+  openItem(item) {
+    if (this.overlayOpen) return;
+    // Aplicaciones reales: abren su propia pantalla en vez de la simulación.
+    if (item.screen) {
+      if (item.kind === 'app') this.launcher.recordRecent(item.id);
+      this.navigate(item.screen, { enter: true });
+      return;
+    }
+    this.overlayReturnFid = this.focus.current?.dataset.fid ?? null;
+
+    this.overlay.style.setProperty('--c1', item.c1);
+    this.overlay.style.setProperty('--c2', item.c2);
+    this.overlay.innerHTML = `
+      <div class="overlay-card">
+        <div class="overlay-icon">${icon(item.icon)}</div>
+        <h1>${esc(item.name)}</h1>
+        <p class="overlay-sub">${esc(item.subtitle ?? 'Aplicación de ejemplo')}</p>
+        <p class="overlay-note">Esta pantalla es una simulación. Las aplicaciones reales llegarán en fases futuras de WebBox OS.</p>
+        <div class="overlay-actions">
+          <div class="btn" role="button" tabindex="-1" data-focusable data-zone="overlay" data-fid="ov:back" data-act="ov-back">${icon('back')}Volver</div>
+          <div class="btn" role="button" tabindex="-1" data-focusable data-zone="overlay" data-fid="ov:home" data-act="ov-home">${icon('home')}Inicio</div>
+        </div>
+      </div>`;
+    this.overlay.hidden = false;
+    this.overlay.classList.remove('is-entering');
+    void this.overlay.offsetWidth;
+    this.overlay.classList.add('is-entering');
+    this.overlayOpen = true;
+
+    if (item.kind === 'app') this.launcher.recordRecent(item.id);
+
+    this.focus.clear();
+    this.focus.pushScope(this.overlay);
+    this.focus.focusFirst('[data-focusable]');
+  }
+
+  closeOverlay({ restore = true } = {}) {
+    if (!this.overlayOpen) return;
+    this.overlayOpen = false;
+    this.overlay.hidden = true;
+    this.overlay.innerHTML = '';
+    this.focus.popScope();
+
+    if (restore) {
+      const ok = this.focus.focusByFid(this.overlayReturnFid);
+      if (!ok) this.#enterScreen(this.current);
+    }
+  }
+
+  // ------------------------------------------------------- bibliotecas
+
+  #openAddDialog(lib) {
+    const isMovies = lib.id === 'movies';
+    this.dialog.open({
+      title: isMovies ? 'Agregar película' : 'Agregar a YouTube',
+      hint: isMovies
+        ? 'Enlace de YouTube o ruta de un archivo (assets/movies/mi-pelicula.mp4). Pulsa OK en un campo para escribir.'
+        : 'Pega un enlace de video o lista de YouTube. Si dejas el título vacío se intenta obtener solo.',
+      fields: [
+        { key: 'url', label: 'Enlace o ruta', placeholder: isMovies ? 'https://… o assets/movies/…mp4' : 'https://www.youtube.com/watch?v=…' },
+        { key: 'title', label: isMovies ? 'Título' : 'Título (opcional)', placeholder: isMovies ? 'Nombre de la película' : 'Se completa solo' },
+        { key: 'category', label: 'Categoría (fila donde aparece)', value: '', placeholder: lib.defaultCategory },
+        ...(isMovies ? [{ key: 'image', label: 'Póster (opcional)', placeholder: 'assets/movies/mi-pelicula.jpg' }] : []),
+      ],
+      onSubmit: (values) => this.#submitItem(lib, values),
+    });
+  }
+
+  async #submitItem(lib, values) {
+    const media = parseMediaUrl(values.url);
+    if (!media) return 'Enlace no válido. Usa un enlace de YouTube o un archivo .mp4 / .webm.';
+    let title = values.title;
+    if (!title && media.type === 'youtube' && media.videoId) title = await fetchYouTubeTitle(values.url);
+    if (!title) return 'Escribe un título para este elemento.';
+
+    const result = lib.add({ ...values, title });
+    if (typeof result === 'string') return result;
+    toast(`Agregado: ${result.title}`);
+    // El foco vuelve a la tarjeta nueva cuando el formulario se cierre.
+    this.dialog.returnFid = lib.fid(result.id);
+    return null;
+  }
+
+  async #playLibraryItem(item, lib) {
+    const onDelete = (it) => this.#deleteItem(lib, it);
+    if (!item.fileHandleKey) {
+      this.player.open(item, { onDelete });
+      return;
+    }
+    try {
+      const handle = await getHandle(item.fileHandleKey);
+      if (!handle) throw new Error('No se encontró el archivo guardado. Vuelve a agregarlo desde Archivos.');
+      let permission = await handle.queryPermission?.({ mode: 'read' });
+      if (permission !== 'granted' && handle.requestPermission) {
+        permission = await handle.requestPermission({ mode: 'read' });
+      }
+      if (permission && permission !== 'granted') {
+        throw new Error('El navegador no concedió permiso de lectura. Vuelve a elegir la carpeta en Archivos.');
+      }
+      const file = await handle.getFile();
+      this.player.openFile(file, { onDelete, title: item.title });
+    } catch (err) {
+      toast(err?.message || 'No se pudo abrir el archivo local.', 4500);
+    }
+  }
+
+  async #addMovieFromFiles(handle, name) {
+    const token = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const key = `movie:${token}`;
+    await saveHandle(key, handle);
+    const result = this.libraries.movies.addFileHandle({ title: name, fileHandleKey: key });
+    if (typeof result === 'string') throw new Error(result);
+    toast(`Agregado a Películas: ${result.title}`);
+  }
+
+  #deleteItem(lib, item) {
+    if (item.fileHandleKey) removeHandle(item.fileHandleKey).catch(() => {});
+    lib.remove(item.id);
+    toast(`Eliminado: ${item.title}`);
+    this.#enterScreen(this.current);
+  }
+
+  // ------------------------------------------------------------ interfaz
+
+  /** Marca el menú lateral como expandido mientras tenga el foco. */
+  #syncSidebar() {
+    const inNav = this.focus.current?.dataset.zone === 'nav';
+    this.sidebar.classList.toggle('expanded', Boolean(inNav));
+  }
+
+  #setLastInput(source) {
+    const el = $('#last-input');
+    if (el && INPUT_LABELS[source]) el.textContent = INPUT_LABELS[source];
+  }
+
+  #updatePadChip() {
+    const chip = $('#pad-chip');
+    const label = $('#pad-label');
+    const pads = this.gamepad.getPads();
+    chip.classList.toggle('on', pads.length > 0);
+    if (!this.gamepad.supported) {
+      label.textContent = 'Gamepad no disponible';
+      chip.title = 'Este navegador no soporta la Gamepad API';
+    } else if (pads.length) {
+      label.textContent = pads.length > 1 ? `${pads[0].name} (+${pads.length - 1})` : pads[0].name;
+      chip.title = pads.map((p) => p.id).join('\n');
+    } else {
+      label.textContent = 'Sin mando';
+      chip.title = 'Conecta un mando por Bluetooth y pulsa un botón';
+    }
+  }
+
+  #applyDisplay() {
+    const root = document.documentElement;
+    root.style.setProperty('--ui-scale', String(config.get('uiScale') / 100));
+    root.style.setProperty('--overscan-x', `${config.get('overscan')}vw`);
+    root.style.setProperty('--overscan-y', `${config.get('overscan')}vh`);
+
+    const reduced = config.get('reduceMotion');
+    document.body.dataset.motion = reduced ? 'reduced' : 'full';
+    this.focus.scrollBehavior = reduced ? 'auto' : 'smooth';
+
+    $('#hints').hidden = !config.get('showHints');
+
+    const bg = BACKGROUNDS.find((b) => b.id === config.get('background')) ?? BACKGROUNDS[0];
+    $('#bg').style.backgroundImage = `url("${bg.file}")`;
+
+    this.#tickClock();
+  }
+
+  #startClock() {
+    this.#tickClock();
+    setInterval(() => this.#tickClock(), 1000);
+  }
+
+  #tickClock() {
+    const now = new Date();
+    const time = now.toLocaleTimeString('es', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: !config.get('clock24'),
+    });
+    const date = now.toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long' });
+    const timeEl = $('#clock-time');
+    const dateEl = $('#clock-date');
+    if (timeEl.textContent !== time) timeEl.textContent = time;
+    if (dateEl.textContent !== date) dateEl.textContent = date;
+  }
+}
+
+/** Título de un video de YouTube (oEmbed). Devuelve '' si no hay conexión o falla. */
+async function fetchYouTubeTitle(url) {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url)}`, {
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return '';
+    const data = await res.json();
+    return typeof data.title === 'string' ? data.title : '';
+  } catch {
+    return '';
+  }
+}
+
+window.webbox = new WebBoxOS();
+window.webbox.start();
+  };
+  const __cache = Object.create(null);
+  function __require(id) {
+    if (__cache[id]) return __cache[id].exports;
+    const factory = __modules[id];
+    if (!factory) throw new Error('Módulo no encontrado: ' + id);
+    const module = { exports: {} };
+    __cache[id] = module;
+    factory(module, module.exports, __require);
+    return module.exports;
+  }
+  __require("js/main.js");
+})();

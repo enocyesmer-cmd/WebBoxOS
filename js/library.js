@@ -53,7 +53,7 @@ export class LibraryScreen {
 
   #loadUser() {
     const saved = storage.get(`lib:${this.id}:items`, []);
-    return Array.isArray(saved) ? saved.filter((i) => i && i.id && i.title && i.url) : [];
+    return Array.isArray(saved) ? saved.filter((i) => i && i.id && i.title && (i.url || i.fileHandleKey)) : [];
   }
 
   #save() {
@@ -87,6 +87,24 @@ export class LibraryScreen {
       url: String(url).trim(),
       category: String(category || '').trim().slice(0, 40),
       image: String(image || '').trim(),
+    };
+    this.userItems.push(item);
+    this.#save();
+    this.render();
+    return item;
+  }
+
+  /** Agrega un archivo local a Películas sin copiarlo ni modificarlo. */
+  addFileHandle({ title, fileHandleKey, category = this.defaultCategory }) {
+    if (this.id !== 'movies') return 'Los archivos locales solo se pueden agregar a Películas.';
+    if (!title || !fileHandleKey) return 'No se pudo identificar el archivo local.';
+    const item = {
+      id: `u:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
+      title: String(title).replace(/\.[^.]+$/, '').trim().slice(0, 120),
+      url: `webbox-file://${encodeURIComponent(fileHandleKey)}`,
+      fileHandleKey,
+      category: String(category || '').trim().slice(0, 40),
+      image: '',
     };
     this.userItems.push(item);
     this.#save();
@@ -151,7 +169,7 @@ export class LibraryScreen {
     const media = parseMediaUrl(item.url);
     const img = item.image || youtubeThumb(media);
     const [c1, c2] = PALETTE[hash(item.title) % PALETTE.length];
-    const kind = media?.type === 'youtube' ? (media.videoId ? 'YouTube' : 'Lista de YouTube') : 'Archivo de video';
+    const kind = item.fileHandleKey ? 'Archivo local' : (media?.type === 'youtube' ? (media.videoId ? 'YouTube' : 'Lista de YouTube') : 'Archivo de video');
     const poster = this.cardStyle === 'poster';
     return `
       <div class="card ${poster ? 'card--poster' : 'card--wide'}${img ? ' card--media' : ''}"

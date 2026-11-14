@@ -14,6 +14,8 @@ import { SettingsScreen } from './settings.js';
 import { LibraryScreen } from './library.js';
 import { Player } from './player.js';
 import { Dialog } from './dialog.js';
+import { FilesScreen } from './files.js';
+import { getHandle, saveHandle, removeHandle } from './fileSystem.js';
 import { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS } from './data/library.js';
 import { parseMediaUrl } from './core/media.js';
 import { BACKGROUNDS } from './data/apps.js';
@@ -34,6 +36,7 @@ class WebBoxOS {
       apps: $('#screen-apps'),
       youtube: $('#screen-youtube'),
       movies: $('#screen-movies'),
+      files: $('#screen-files'),
       settings: $('#screen-settings'),
     };
     this.current = 'home';
@@ -53,7 +56,7 @@ class WebBoxOS {
     this.player = new Player({ el: $('#player'), focus: this.focus });
     this.dialog = new Dialog({ el: $('#dialog'), focus: this.focus });
     const common = {
-      onPlay: (item, lib) => this.player.open(item, { onDelete: (it) => this.#deleteItem(lib, it) }),
+      onPlay: (item, lib) => this.#playLibraryItem(item, lib),
       onAdd: (lib) => this.#openAddDialog(lib),
       onExtra: (extra) => {
         if (extra === 'youtube-site') window.open('https://www.youtube.com/', '_blank', 'noopener');
@@ -83,17 +86,22 @@ class WebBoxOS {
         root: this.screens.movies,
         defaults: MOVIES_DEFAULTS,
         title: 'Películas',
-        subtitle: 'Tu biblioteca. Agrega películas con un enlace de YouTube o con la ruta de un archivo .mp4 / .webm.',
+        subtitle: 'Tu biblioteca. Agrega enlaces de YouTube, archivos del equipo desde Archivos o rutas de video locales.',
         defaultCategory: 'Mis películas',
         cardStyle: 'poster',
         cardIcon: 'film',
         accept: ['youtube', 'video'],
         emptyText:
-          '<b>Aquí irán tus películas.</b><br>Pulsa <b>Agregar</b> y escribe el título y el enlace. ' +
-          'Para archivos propios, copia el video a <b>assets/movies/</b> y usa la ruta ' +
-          '(por ejemplo <b>assets/movies/mi-pelicula.mp4</b>).',
+          '<b>Aquí irán tus películas.</b><br>Pulsa <b>Agregar</b> para guardar un enlace o abre <b>Archivos</b> ' +
+          'y usa <b>Agregar a Películas</b> sobre cualquier video del equipo.',
       }),
     };
+    this.files = new FilesScreen({
+      root: this.screens.files,
+      focus: this.focus,
+      onOpenMedia: (file) => this.player.openFile(file),
+      onAddMovie: (handle, name) => this.#addMovieFromFiles(handle, name),
+    });
     this.settings = new SettingsScreen({
       root: this.screens.settings,
       focus: this.focus,
@@ -105,6 +113,7 @@ class WebBoxOS {
     hydrateIcons();
     this.launcher.render();
     for (const lib of Object.values(this.libraries)) lib.render();
+    this.files.render();
     this.settings.render();
     this.#applyDisplay();
     this.#bindEvents();
@@ -237,12 +246,14 @@ class WebBoxOS {
   #enterScreen(name) {
     if (name === 'settings') {
       this.settings.focusEntry();
+    } else if (name === 'files') {
+      this.files.focusEntry();
     } else {
       this.focus.focusFirst('[data-zone="main"]');
     }
   }
 
-  back() {
+  async back() {
     if (this.dialog.isOpen) {
       this.dialog.close();
       return;
@@ -255,6 +266,7 @@ class WebBoxOS {
       this.closeOverlay();
       return;
     }
+    if (this.current === 'files' && await this.files.handleBack()) return;
     if (this.settings.handleBack()) return;
     if (this.current !== 'home') {
       this.navigate('home', { enter: true });
@@ -271,6 +283,7 @@ class WebBoxOS {
   home() {
     if (this.dialog.isOpen) this.dialog.close({ restore: false });
     if (this.player.isOpen) this.player.close({ restore: false });
+    if (this.files?.viewerOpen) this.files.closeViewer({ restore: false });
     if (this.overlayOpen) this.closeOverlay({ restore: false });
     if (this.settings.capturing) this.settings.cancelCapture();
     this.navigate('home');
@@ -363,7 +376,40 @@ class WebBoxOS {
     return null;
   }
 
+  async #playLibraryItem(item, lib) {
+    const onDelete = (it) => this.#deleteItem(lib, it);
+    if (!item.fileHandleKey) {
+      this.player.open(item, { onDelete });
+      return;
+    }
+    try {
+      const handle = await getHandle(item.fileHandleKey);
+      if (!handle) throw new Error('No se encontró el archivo guardado. Vuelve a agregarlo desde Archivos.');
+      let permission = await handle.queryPermission?.({ mode: 'read' });
+      if (permission !== 'granted' && handle.requestPermission) {
+        permission = await handle.requestPermission({ mode: 'read' });
+      }
+      if (permission && permission !== 'granted') {
+        throw new Error('El navegador no concedió permiso de lectura. Vuelve a elegir la carpeta en Archivos.');
+      }
+      const file = await handle.getFile();
+      this.player.openFile(file, { onDelete, title: item.title });
+    } catch (err) {
+      toast(err?.message || 'No se pudo abrir el archivo local.', 4500);
+    }
+  }
+
+  async #addMovieFromFiles(handle, name) {
+    const token = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const key = `movie:${token}`;
+    await saveHandle(key, handle);
+    const result = this.libraries.movies.addFileHandle({ title: name, fileHandleKey: key });
+    if (typeof result === 'string') throw new Error(result);
+    toast(`Agregado a Películas: ${result.title}`);
+  }
+
   #deleteItem(lib, item) {
+    if (item.fileHandleKey) removeHandle(item.fileHandleKey).catch(() => {});
     lib.remove(item.id);
     toast(`Eliminado: ${item.title}`);
     this.#enterScreen(this.current);

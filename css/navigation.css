@@ -97,3 +97,16 @@ body[data-motion="reduced"] *::after {
   animation-duration: 0.01ms !important;
   animation-delay: 0s !important;
 }
+
+/* Explorador: el elemento seleccionado mantiene el mismo feedback del launcher. */
+.file-entry.is-focused {
+  border-color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 0 1.8rem rgba(110, 168, 255, 0.28);
+  transform: scale(1.025);
+}
+
+.file-card:has(.file-entry.is-focused) {
+  border-color: rgba(255, 255, 255, 0.32);
+  background: rgba(255, 255, 255, 0.09);
+}

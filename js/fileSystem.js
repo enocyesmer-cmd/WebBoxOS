@@ -41,6 +41,17 @@ export async function getHandle(path) {
   });
 }
 
+/** Elimina un manejador guardado (no elimina el archivo del equipo). */
+export async function removeHandle(path) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).delete(path);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 /** Solicita al usuario una carpeta y la persiste */
 export async function requestRootDirectory() {
   if (!window.showDirectoryPicker) {
