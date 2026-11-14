@@ -5,9 +5,9 @@
 export const APPS = [
   { id: 'youtube', name: 'YouTube', icon: 'youtube', c1: '#b91c1c', c2: '#f87171', screen: 'youtube' },
   { id: 'movies', name: 'Películas', icon: 'film', c1: '#7c2d12', c2: '#f59e0b', screen: 'movies' },
-  { id: 'videos', name: 'Videos', icon: 'play', c1: '#ff5f6d', c2: '#ffa751' },
-  { id: 'music', name: 'Música', icon: 'music', c1: '#7f5af0', c2: '#2cb1ff' },
-  { id: 'photos', name: 'Fotos', icon: 'photo', c1: '#11998e', c2: '#7ee08f' },
+  { id: 'videos', name: 'Videos', icon: 'play', c1: '#ff5f6d', c2: '#ffa751', screen: 'files', location: 'videos' },
+  { id: 'music', name: 'Música', icon: 'music', c1: '#7f5af0', c2: '#2cb1ff', screen: 'files', location: 'music' },
+  { id: 'photos', name: 'Fotos', icon: 'photo', c1: '#11998e', c2: '#7ee08f', screen: 'files', location: 'photos' },
   { id: 'browser', name: 'Navegador', icon: 'globe', c1: '#2563eb', c2: '#22d3ee' },
   { id: 'games', name: 'Juegos', icon: 'gamepad', c1: '#e11d74', c2: '#9333ea', screen: 'games' },
   { id: 'tv', name: 'TV en vivo', icon: 'tv', c1: '#f59e0b', c2: '#ef4444' },
@@ -37,4 +37,11 @@ export const BACKGROUNDS = [
   { id: 'ocean', name: 'Océano', file: 'assets/backgrounds/ocean.svg' },
   { id: 'sunset', name: 'Atardecer', file: 'assets/backgrounds/sunset.svg' },
   { id: 'graphite', name: 'Grafito', file: 'assets/backgrounds/graphite.svg' },
+];
+
+/** Carpetas de contenido que el usuario puede indicar en Aplicaciones. */
+export const MEDIA_LOCATIONS = [
+  { key: 'music', label: 'Música', icon: 'music' },
+  { key: 'photos', label: 'Fotos', icon: 'photo' },
+  { key: 'videos', label: 'Videos', icon: 'film' },
 ];

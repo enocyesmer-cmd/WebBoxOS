@@ -201,7 +201,8 @@
 
 /* ------------------------------------------------------------ formulario */
 
-#dialog {
+#dialog,
+#cardmenu {
   position: fixed;
   inset: 0;
   z-index: 70;
@@ -349,4 +350,42 @@ body.player-open #toasts {
   width: 4rem;
   height: 4rem;
   filter: drop-shadow(0 0 1.5rem rgba(167, 139, 250, 0.45));
+}
+
+/* ------------------------------------------------- menú de tarjeta (doble pulsación) */
+
+.menu-card {
+  width: min(32rem, 90vw);
+}
+
+.menu-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  margin-top: 1.3rem;
+}
+
+.menu-btn {
+  justify-content: flex-start;
+  border: 0.12rem solid transparent;
+}
+
+.menu-btn.btn--danger {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fecaca;
+}
+
+.menu-btn.btn--ghost {
+  background: transparent;
+  color: var(--muted);
+}
+
+.menu-btn.is-focused {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: #fff;
+  color: #fff;
+}
+
+.menu-btn.btn--danger.is-focused {
+  background: rgba(239, 68, 68, 0.55);
 }

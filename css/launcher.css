@@ -130,3 +130,120 @@
 .grid .card {
   width: auto;
 }
+
+/* Arte con logo a color o foto propia: placa clara con esquinas redondeadas */
+.card-art--plate {
+  width: 3.9rem;
+  height: 3.9rem;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0.3rem 1rem rgba(0, 0, 0, 0.35);
+}
+
+.card--wide .card-art--plate {
+  width: 4.8rem;
+  height: 4.8rem;
+}
+
+.card-art--plate .logo {
+  width: 78%;
+  height: 78%;
+}
+
+.card-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Ubicaciones de música, fotos y videos (pantalla Aplicaciones) */
+.apps-tip {
+  padding: 0 3rem 0 2rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.locations {
+  padding: 0.6rem 3rem 0 2rem;
+}
+
+.locations-title {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: #dfe6f5;
+}
+
+.locations-sub {
+  margin: 0.4rem 0 1rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.locations-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+}
+
+.loc-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.9rem 1.1rem;
+  border: 0.12rem solid transparent;
+  border-radius: 1rem;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.loc-row.is-focused {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: #fff;
+}
+
+.loc-ico .icon {
+  width: 2rem;
+  height: 2rem;
+  color: var(--accent);
+}
+
+.loc-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.loc-text b {
+  font-size: 1.1rem;
+}
+
+.loc-text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.loc-row.is-set .loc-text small {
+  color: #86efac;
+}
+
+.loc-action {
+  flex: none;
+  font-size: 0.85rem;
+  color: var(--accent);
+}
+
+.apps-restore {
+  padding: 0 3rem 3rem 2rem;
+}

@@ -95,15 +95,28 @@ requiere Internet y el núcleo no está incluido dentro del ZIP. La lectura de R
 en el almacenamiento local del navegador/equipo. La disponibilidad de ROMs y el uso de copias
 deben respetar los derechos de autor aplicables.
 
-**Emuladores** muestra el catálogo de consolas disponibles. La tarjeta **Super Nintendo (SNES)** y el botón **Abrir SNES** llevan a la biblioteca de **Juegos**, donde se buscan y ejecutan las ROMs del Gestor de archivos.
+**Emuladores** abre directamente el emulador de Super Nintendo (SNES): la misma biblioteca de ROMs de **Juegos**, con el título "Emuladores · Super Nintendo".
 
 ## Fondos personalizados
 
-En **Configuración > Fondo**, el botón **Agregar fondo** permite seleccionar una imagen propia
-(JPG, PNG, WEBP, GIF, AVIF o BMP, hasta 20 MB). La imagen se guarda como Blob en IndexedDB
-y queda disponible después de cerrar y volver a abrir WebBox OS en el mismo perfil del navegador.
-Selecciona **Mi fondo** para aplicarla; cualquiera de los fondos incluidos permite volver al diseño
-original.
+En **Configuración > Fondo**, **Importar fondo** permite elegir imágenes propias (JPG, PNG, WEBP,
+GIF, AVIF o BMP, hasta 20 MB, máximo 30). Cada una se guarda como Blob en IndexedDB y aparece
+como **Mi fondo 1, 2…** junto a los fondos incluidos. **Pulsa dos veces** un fondo propio para
+eliminarlo.
+
+## Aplicaciones: ubicaciones, iconos y eliminar casillas
+
+- **Dónde están tus archivos** (pantalla Aplicaciones): elige la carpeta de tu **Música**, **Fotos**
+  y **Videos** (selector de carpetas en Chrome/Edge; en otros navegadores se usa el almacenamiento
+  interno). Al abrir esas aplicaciones, el Gestor de archivos entra directo en esa carpeta.
+  El navegador solo comparte el nombre de la carpeta, no la ruta completa.
+- **Doble pulsación** (dos clics, o OK dos veces seguidas con teclado/mando) sobre cualquier casilla
+  abre un menú: **Cambiar foto del icono**, **Restaurar icono original** y **Eliminar casilla**.
+  Una sola pulsación abre la aplicación tras una espera de 350 ms.
+- Las casillas eliminadas se recuperan con **Restaurar** al final de la pantalla Aplicaciones.
+- Cada aplicación trae un logo a color propio (YouTube con su forma reconocible). Son dibujos SVG
+  del proyecto, no los archivos oficiales de las marcas; para usar el oficial, cámbialo con la foto del icono.
+- Los iconos propios se recortan a cuadrado, se reducen a 256 px y se guardan en el navegador.
 
 ## Estructura
 
@@ -119,7 +132,10 @@ original.
     js/launcher.js        filas y tarjetas
     js/library.js         bibliotecas YouTube / Películas
     js/settings.js        configuración, fondos personalizados y prueba de botones
-    js/backgroundStore.js almacenamiento de imágenes de fondo en IndexedDB
+    js/backgroundStore.js almacenamiento de varios fondos propios en IndexedDB
+    js/cardMenu.js        menú de doble pulsación (icono / eliminar)
+    js/core/images.js     recorte y reducción de fotos de icono
+    js/data/logos.js      logos a color de las aplicaciones
     js/data/              datos de aplicaciones, fondos y bibliotecas
     tools/build.py        empaquetador sin dependencias para `file://`
     js/bundle.js          bundle generado para doble clic

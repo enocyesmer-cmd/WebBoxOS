@@ -403,6 +403,6 @@
   color: var(--accent);
 }
 
-.bg-tile[data-id="custom"] {
+.bg-tile--custom {
   border: 1px solid rgba(110, 168, 255, 0.55);
 }

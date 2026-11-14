@@ -1,12 +1,14 @@
 /**
- * Almacenamiento persistente del fondo personalizado de WebBox OS.
- * La imagen se guarda como Blob en IndexedDB, nunca como texto base64 en ajustes.
+ * Almacenamiento persistente de los fondos personalizados de WebBox OS.
+ * Cada imagen se guarda como Blob en IndexedDB (nunca como base64 en ajustes),
+ * así que se pueden importar varios y siguen disponibles al reabrir el navegador.
  */
 const DB_NAME = 'webbox-backgrounds';
 const DB_VERSION = 1;
 const STORE_NAME = 'wallpapers';
-const RECORD_KEY = 'custom';
+const LEGACY_KEY = 'custom'; // el único fondo que guardaba la versión anterior
 const MAX_BACKGROUND_SIZE = 20 * 1024 * 1024;
+const MAX_BACKGROUNDS = 30;
 const ALLOWED_TYPES = new Set([
   'image/jpeg',
   'image/png',
@@ -57,8 +59,18 @@ function requestResult(request) {
   });
 }
 
-/** Guarda una imagen raster para que siga disponible después de cerrar el navegador. */
-export async function saveCustomBackground(file) {
+/** Valor de configuración que representa un fondo propio: "custom:<id>". */
+export const customValue = (id) => `custom:${id}`;
+
+/** Id de almacenamiento a partir del valor de configuración ("custom" antiguo o "custom:<id>"). */
+export function customIdFromValue(value) {
+  if (value === 'custom') return LEGACY_KEY;
+  if (typeof value === 'string' && value.startsWith('custom:')) return value.slice(7);
+  return null;
+}
+
+/** Guarda una imagen nueva y devuelve su id. */
+export async function addBackground(file) {
   if (!(file instanceof Blob)) throw new Error('Selecciona una imagen válida.');
   if (!ALLOWED_TYPES.has(file.type)) {
     throw new Error('Formato no compatible. Usa JPG, PNG, WEBP, GIF, AVIF o BMP.');
@@ -67,21 +79,43 @@ export async function saveCustomBackground(file) {
   if (file.size > MAX_BACKGROUND_SIZE) throw new Error('La imagen supera el límite de 20 MB.');
 
   const db = await openDb();
+  const count = await requestResult(db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).count());
+  if (count >= MAX_BACKGROUNDS) throw new Error(`Ya tienes ${MAX_BACKGROUNDS} fondos. Elimina alguno para agregar otro.`);
+
+  const id = `bg-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const tx = db.transaction(STORE_NAME, 'readwrite');
   tx.objectStore(STORE_NAME).put({
-    id: RECORD_KEY,
+    id,
     blob: file,
     name: String(file.name || 'Fondo personalizado').slice(0, 180),
     type: file.type,
     updatedAt: Date.now(),
   });
   await transactionDone(tx);
+  return id;
 }
 
-/** Recupera el Blob del fondo personalizado, o null cuando aún no existe. */
-export async function getCustomBackground() {
+/** Todos los fondos propios, del más antiguo al más nuevo: [{ id, name, blob }]. */
+export async function listBackgrounds() {
   const db = await openDb();
-  const tx = db.transaction(STORE_NAME, 'readonly');
-  const record = await requestResult(tx.objectStore(STORE_NAME).get(RECORD_KEY));
+  const records = await requestResult(db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll());
+  return records
+    .filter((r) => r?.blob instanceof Blob)
+    .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0))
+    .map(({ id, name, blob }) => ({ id, name, blob }));
+}
+
+/** Blob de un fondo propio, o null si ya no existe. */
+export async function getBackground(id) {
+  const db = await openDb();
+  const record = await requestResult(db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(id));
   return record?.blob instanceof Blob ? record.blob : null;
+}
+
+/** Elimina un fondo propio. */
+export async function deleteBackground(id) {
+  const db = await openDb();
+  const tx = db.transaction(STORE_NAME, 'readwrite');
+  tx.objectStore(STORE_NAME).delete(id);
+  await transactionDone(tx);
 }

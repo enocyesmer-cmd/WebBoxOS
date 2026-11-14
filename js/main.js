@@ -16,11 +16,15 @@ import { Player } from './player.js';
 import { Dialog } from './dialog.js';
 import { FilesScreen } from './files.js';
 import { GamesScreen } from './games.js';
-import { getHandle, saveHandle, removeHandle, getStoredFile } from './fileSystem.js';
+import { getHandle, saveHandle, removeHandle, getStoredFile, supportsFileSystemAccess } from './fileSystem.js';
 import { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS } from './data/library.js';
 import { parseMediaUrl } from './core/media.js';
 import { BACKGROUNDS } from './data/apps.js';
-import { getCustomBackground } from './backgroundStore.js';
+import { getBackground, customIdFromValue } from './backgroundStore.js';
+import { CardMenu } from './cardMenu.js';
+import { toIconDataUrl } from './core/images.js';
+import { storage } from './core/storage.js';
+import { MEDIA_LOCATIONS } from './data/apps.js';
 import { hydrateIcons, icon } from './icons.js';
 import { esc, toast } from './ui.js';
 
@@ -40,10 +44,11 @@ class WebBoxOS {
       movies: $('#screen-movies'),
       files: $('#screen-files'),
       games: $('#screen-games'),
-      emulators: $('#screen-emulators'),
       settings: $('#screen-settings'),
     };
     this.current = 'home';
+    this.navName = '';
+    this.mediaFolders = this.#loadMediaFolders();
     this.overlayOpen = false;
     this.overlayReturnFid = null;
     this.lastPointerMove = 0;
@@ -58,9 +63,14 @@ class WebBoxOS {
       homeEl: this.screens.home,
       appsEl: this.screens.apps,
       onOpen: (item) => this.openItem(item),
+      onMenu: (item) => this.#openCardMenu(item),
+      onChooseLocation: (key) => this.#chooseLocation(key),
+      getLocations: () => this.mediaFolders,
     });
+    this.launcher.onRestored = () => this.#enterScreen(this.current);
     this.player = new Player({ el: $('#player'), focus: this.focus });
     this.dialog = new Dialog({ el: $('#dialog'), focus: this.focus });
+    this.cardMenu = new CardMenu({ el: $('#cardmenu'), focus: this.focus });
     const common = {
       onPlay: (item, lib) => this.#playLibraryItem(item, lib),
       onAdd: (lib) => this.#openAddDialog(lib),
@@ -119,6 +129,7 @@ class WebBoxOS {
       root: this.screens.settings,
       focus: this.focus,
       gamepad: this.gamepad,
+      onBackgroundMenu: (spec) => this.cardMenu.open(spec),
     });
   }
 
@@ -128,7 +139,6 @@ class WebBoxOS {
     for (const lib of Object.values(this.libraries)) lib.render();
     this.files.render();
     this.games.render();
-    this.#renderEmulators();
     this.settings.render();
     this.#applyDisplay();
     this.#bindEvents();
@@ -169,9 +179,6 @@ class WebBoxOS {
     this.sidebar.addEventListener('click', (e) => {
       const item = e.target.closest('[data-screen]');
       if (item) this.navigate(item.dataset.screen, { enter: true });
-    });
-    this.screens.emulators.addEventListener('click', (e) => {
-      if (e.target.closest('[data-act="emulators-snes"]')) this.navigate('games', { enter: true });
     });
     bus.on('focus:change', () => this.#syncSidebar());
 
@@ -246,22 +253,29 @@ class WebBoxOS {
    * Cambia de pantalla. `enter` además mueve el foco al contenido.
    */
   navigate(name, { enter = false } = {}) {
-    if (!this.screens[name]) return;
-    if (this.current === 'games' && name !== 'games') this.games?.stop({ restore: false });
+    if (!this.screens[name] && name !== 'emulators') return;
+    // "Emuladores" abre directamente el emulador de SNES (la pantalla de juegos).
+    const view = name === 'emulators' ? 'games' : name;
+    if (this.current === 'games' && view !== 'games') this.games?.stop({ restore: false });
 
-    if (name !== this.current) {
-      for (const [key, el] of Object.entries(this.screens)) el.hidden = key !== name;
-      const el = this.screens[name];
+    if (view !== this.current) {
+      for (const [key, el] of Object.entries(this.screens)) el.hidden = key !== view;
+      const el = this.screens[view];
       el.classList.remove('is-entering');
       void el.offsetWidth; // reinicia la animación
       el.classList.add('is-entering');
-      this.current = name;
-      if (name === 'settings') this.settings.refresh();
+      this.current = view;
+      if (view === 'settings') this.settings.refresh();
+    }
+    if (name !== this.navName) {
+      this.navName = name;
       for (const item of this.sidebar.querySelectorAll('[data-screen]')) {
         item.classList.toggle('is-current', item.dataset.screen === name);
       }
+      const title = this.screens.games.querySelector('.screen-title');
+      if (title) title.textContent = name === 'emulators' ? 'Emuladores · Super Nintendo' : 'Juegos';
     }
-    if (enter) this.#enterScreen(name);
+    if (enter) this.#enterScreen(view);
   }
 
   #enterScreen(name) {
@@ -271,14 +285,16 @@ class WebBoxOS {
       this.files.focusEntry();
     } else if (name === 'games') {
       this.games.focusEntry();
-    } else if (name === 'emulators') {
-      this.focus.focusFirst('#screen-emulators [data-zone="main"]');
     } else {
       this.focus.focusFirst('[data-zone="main"]');
     }
   }
 
   async back() {
+    if (this.cardMenu.isOpen) {
+      this.cardMenu.close();
+      return;
+    }
     if (this.dialog.isOpen) {
       this.dialog.close();
       return;
@@ -307,6 +323,7 @@ class WebBoxOS {
   }
 
   home() {
+    if (this.cardMenu.isOpen) this.cardMenu.close({ restore: false });
     if (this.dialog.isOpen) this.dialog.close({ restore: false });
     if (this.player.isOpen) this.player.close({ restore: false });
     if (this.files?.viewerOpen) this.files.closeViewer({ restore: false });
@@ -319,31 +336,6 @@ class WebBoxOS {
     this.#enterScreen('home');
   }
 
-  #renderEmulators() {
-    this.screens.emulators.innerHTML = `
-      <h1 class="screen-title">Emuladores</h1>
-      <p class="files-sub">Consolas retro listas para ejecutar tus juegos desde WebBox OS.</p>
-      <section class="emulators-catalog">
-        <article class="emulators-console-card">
-          <div class="emulators-console-art">${icon('gamepad')}</div>
-          <div class="emulators-console-info">
-            <div class="emulators-card-topline">
-              <span class="emulators-kicker">CONSOLA DISPONIBLE</span>
-              <span class="emulators-status"><i></i> Lista para jugar</span>
-            </div>
-            <h2>Super Nintendo (SNES)</h2>
-            <p>EmulatorJS · Snes9x · ROMs desde el Gestor de archivos · Mando y teclado.</p>
-            <div class="emulators-card-actions">
-              <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
-                   data-fid="emulators:snes" data-act="emulators-snes">${icon('play')}Abrir SNES</div>
-              <span class="emulators-card-note">Formatos: SFC · SMC · FIG · SWC</span>
-            </div>
-          </div>
-        </article>
-        <p class="emulators-help">Tus ROMs no se incluyen en WebBox OS. Guarda tus archivos en el Gestor de archivos y abre SNES para buscarlos y ejecutarlos.</p>
-      </section>`;
-  }
-
   // -------------------------------------------------------------- overlay
 
   openItem(item) {
@@ -351,6 +343,10 @@ class WebBoxOS {
     // Aplicaciones reales: abren su propia pantalla en vez de la simulación.
     if (item.screen) {
       if (item.kind === 'app') this.launcher.recordRecent(item.id);
+      if (item.location) {
+        this.#openMediaLocation(item.location).catch((err) =>
+          toast(err?.message || 'No se pudo abrir esa carpeta.', 4500));
+      }
       this.navigate(item.screen, { enter: true });
       return;
     }
@@ -393,6 +389,116 @@ class WebBoxOS {
       const ok = this.focus.focusByFid(this.overlayReturnFid);
       if (!ok) this.#enterScreen(this.current);
     }
+  }
+
+  // ------------------------------------------------ menú de tarjetas
+
+  /** Doble pulsación sobre una tarjeta: cambiar la foto del icono o eliminarla. */
+  #openCardMenu(item) {
+    if (this.overlayOpen || this.cardMenu.isOpen || this.dialog.isOpen || this.player.isOpen) return;
+    const actions = [
+      {
+        id: 'icon',
+        label: 'Cambiar foto del icono',
+        icon: 'photo',
+        file: true,
+        onSelect: async (file) => {
+          try {
+            this.launcher.setIcon(item.id, await toIconDataUrl(file));
+            toast(`Icono actualizado: ${item.name}`);
+          } catch (err) {
+            toast(err?.message || 'No se pudo usar esa imagen.', 4200);
+          }
+        },
+      },
+    ];
+    if (this.launcher.hasCustomIcon(item.id)) {
+      actions.push({
+        id: 'reset',
+        label: 'Restaurar icono original',
+        icon: 'reset',
+        onSelect: () => {
+          this.launcher.resetIcon(item.id);
+          toast(`Icono original: ${item.name}`);
+        },
+      });
+    }
+    actions.push({
+      id: 'delete',
+      label: 'Eliminar casilla',
+      icon: 'trash',
+      danger: true,
+      onSelect: () => {
+        this.launcher.hide(item.id);
+        toast(`Eliminado: ${item.name}. Se restaura desde Aplicaciones.`, 3800);
+      },
+    });
+    this.cardMenu.open({
+      title: item.name,
+      subtitle: 'Elige qué hacer con esta casilla.',
+      actions,
+    });
+  }
+
+  // ------------------------------------------ ubicaciones de contenido
+
+  #loadMediaFolders() {
+    const saved = storage.get('mediaFolders', {});
+    const out = {};
+    for (const { key } of MEDIA_LOCATIONS) {
+      const info = saved?.[key];
+      if (info && typeof info.name === 'string') out[key] = { name: info.name, internal: Boolean(info.internal) };
+    }
+    return out;
+  }
+
+  #saveMediaFolder(key, info) {
+    this.mediaFolders[key] = info;
+    storage.set('mediaFolders', this.mediaFolders);
+    this.launcher.render();
+    this.focus.focusByFid(`loc:${key}`, { scroll: false });
+  }
+
+  async #chooseLocation(key) {
+    const label = MEDIA_LOCATIONS.find((l) => l.key === key)?.label ?? key;
+    if (!supportsFileSystemAccess()) {
+      this.#saveMediaFolder(key, { name: 'Almacenamiento interno', internal: true });
+      toast(`${label}: este navegador no permite elegir carpetas del equipo; se usará el almacenamiento interno.`, 4800);
+      return;
+    }
+    try {
+      const handle = await window.showDirectoryPicker({ id: `webbox-${key}`, mode: 'read' });
+      await saveHandle(`media:${key}`, handle);
+      this.#saveMediaFolder(key, { name: handle.name || 'Carpeta', internal: false });
+      toast(`${label}: ${handle.name || 'carpeta'} guardada.`);
+    } catch (err) {
+      if (err?.name === 'AbortError') return;
+      toast(err?.message || 'No se pudo elegir la carpeta.', 4500);
+    }
+  }
+
+  /** Abre en el Gestor de archivos la carpeta elegida para música, fotos o videos. */
+  async #openMediaLocation(key) {
+    const label = MEDIA_LOCATIONS.find((l) => l.key === key)?.label ?? key;
+    const info = this.mediaFolders[key];
+    if (!info) {
+      toast(`Aún no elegiste la carpeta de ${label}. Hazlo en Aplicaciones > Dónde están tus archivos.`, 5000);
+      return;
+    }
+    if (info.internal) {
+      await this.files.openInternal();
+      return;
+    }
+    const handle = await getHandle(`media:${key}`);
+    if (!handle) throw new Error(`No se encontró la carpeta de ${label}. Vuelve a elegirla en Aplicaciones.`);
+    let permission = await handle.queryPermission?.({ mode: 'read' });
+    if (permission !== 'granted' && handle.requestPermission) {
+      permission = await handle.requestPermission({ mode: 'read' });
+    }
+    if (permission && permission !== 'granted') {
+      throw new Error(`El navegador no concedió permiso para la carpeta de ${label}. Vuelve a elegirla en Aplicaciones.`);
+    }
+    await this.files.openLocation({ backend: 'native', handle, name: handle.name || info.name, path: '/', kind: 'directory' });
   }
 
   // ------------------------------------------------------- bibliotecas
@@ -530,9 +636,10 @@ class WebBoxOS {
     let imageUrl = '';
     let isTemporaryUrl = false;
 
-    if (selected === 'custom') {
+    const customId = customIdFromValue(selected);
+    if (customId) {
       try {
-        const blob = await getCustomBackground();
+        const blob = await getBackground(customId);
         if (request !== this.backgroundRequest) return;
         if (blob) {
           imageUrl = URL.createObjectURL(blob);

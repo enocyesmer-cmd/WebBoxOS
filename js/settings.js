@@ -12,7 +12,8 @@ import { storage } from './core/storage.js';
 import { bus } from './core/events.js';
 import { icon } from './icons.js';
 import { BACKGROUNDS } from './data/apps.js';
-import { getCustomBackground, saveCustomBackground } from './backgroundStore.js';
+import { listBackgrounds, addBackground, deleteBackground, customValue } from './backgroundStore.js';
+import { DOUBLE_PRESS_MS } from './launcher.js';
 import { esc, toast } from './ui.js';
 
 const TABS = [
@@ -61,17 +62,19 @@ export class SettingsScreen {
    * @param {{root:HTMLElement, focus:import('./core/focus.js').FocusManager,
    *          gamepad:import('./input/gamepad.js').GamepadManager}} opts
    */
-  constructor({ root, focus, gamepad }) {
+  constructor({ root, focus, gamepad, onBackgroundMenu }) {
     this.root = root;
     this.focus = focus;
     this.gamepad = gamepad;
+    this.onBackgroundMenu = onBackgroundMenu;
+    this.pendingBg = null;
     this.active = 'device';
     this.capturing = null; // acción que se está remapeando
     this.confirmReset = false;
     this.live = new Map(); // index -> { cells, bars }
-    this.customBackgroundUrl = null;
+    this.customBackgrounds = new Map(); // id -> { url, name }
+    this.customBackgroundsLoaded = false;
     this.customBackgroundLoading = false;
-    this.customBackgroundVersion = 0;
 
     root.innerHTML = `
       <div class="settings">
@@ -418,48 +421,59 @@ export class SettingsScreen {
     ).join('');
     return `
       <h2 class="panel-title">Fondo de pantalla</h2>
-      <p class="background-description">Elige uno de los fondos incluidos o agrega una imagen de tu equipo.</p>
-      ${this.#action('bg-add', 'bg:add', 'Agregar fondo', 'Selecciona una imagen JPG, PNG, WEBP, GIF, AVIF o BMP (máximo 20 MB)', 'plus')}
+      <p class="background-description">Elige uno de los fondos incluidos o importa tus propias imágenes. Pulsa dos veces un fondo tuyo para eliminarlo.</p>
+      ${this.#action('bg-add', 'bg:add', 'Importar fondo', 'Selecciona una imagen JPG, PNG, WEBP, GIF, AVIF o BMP (máximo 20 MB). Puedes importar varias.', 'plus')}
       <input type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/bmp" data-bg-upload hidden>
       <div class="bg-grid" data-bg-grid>${tiles}</div>`;
   }
 
   async #loadCustomBackgroundPreview() {
-    if (this.customBackgroundUrl || this.customBackgroundLoading) {
-      this.#syncCustomBackgroundTile();
+    if (this.customBackgroundsLoaded) {
+      this.#syncCustomBackgroundTiles();
       return;
     }
+    if (this.customBackgroundLoading) return;
     this.customBackgroundLoading = true;
-    const version = ++this.customBackgroundVersion;
     try {
-      const blob = await getCustomBackground();
-      if (version !== this.customBackgroundVersion || this.active !== 'background') return;
-      if (blob) this.customBackgroundUrl = URL.createObjectURL(blob);
-      this.#syncCustomBackgroundTile();
+      const list = await listBackgrounds();
+      for (const { id, name, blob } of list) {
+        if (!this.customBackgrounds.has(id)) {
+          this.customBackgrounds.set(id, { url: URL.createObjectURL(blob), name });
+        }
+      }
+      this.customBackgroundsLoaded = true;
+      this.#syncCustomBackgroundTiles();
     } catch (error) {
-      console.warn('[WebBox OS] No se pudo cargar la vista previa del fondo.', error);
+      console.warn('[WebBox OS] No se pudieron cargar los fondos personalizados.', error);
     } finally {
-      if (version === this.customBackgroundVersion) this.customBackgroundLoading = false;
+      this.customBackgroundLoading = false;
     }
   }
 
-  #syncCustomBackgroundTile() {
+  /** Dibuja una casilla por cada fondo importado, al final de la cuadrícula. */
+  #syncCustomBackgroundTiles() {
     const grid = this.panelEl.querySelector('[data-bg-grid]');
-    if (!grid) return;
-    grid.querySelector('[data-id="custom"]')?.remove();
-    if (!this.customBackgroundUrl) return;
-    const tile = document.createElement('div');
-    tile.className = `bg-tile${config.get('background') === 'custom' ? ' selected' : ''}`;
-    tile.setAttribute('role', 'button');
-    tile.setAttribute('tabindex', '-1');
-    tile.setAttribute('data-focusable', '');
-    tile.dataset.zone = 'settings-panel';
-    tile.dataset.fid = 'bg:custom';
-    tile.dataset.act = 'bg';
-    tile.dataset.id = 'custom';
-    tile.style.backgroundImage = `url("${this.customBackgroundUrl}")`;
-    tile.innerHTML = `<span>Mi fondo</span><span class="tick">${icon('check')}</span>`;
-    grid.append(tile);
+    if (!grid || this.active !== 'background') return;
+    for (const old of grid.querySelectorAll('[data-custom]')) old.remove();
+    const current = config.get('background');
+    let number = 0;
+    for (const [id, { url }] of this.customBackgrounds) {
+      number += 1;
+      const value = customValue(id);
+      const tile = document.createElement('div');
+      tile.className = `bg-tile bg-tile--custom${current === value ? ' selected' : ''}`;
+      tile.setAttribute('role', 'button');
+      tile.setAttribute('tabindex', '-1');
+      tile.setAttribute('data-focusable', '');
+      tile.setAttribute('data-custom', '');
+      tile.dataset.zone = 'settings-panel';
+      tile.dataset.fid = `bg:${value}`;
+      tile.dataset.act = 'bg';
+      tile.dataset.id = value;
+      tile.style.backgroundImage = `url("${url}")`;
+      tile.innerHTML = `<span>Mi fondo ${number}</span><span class="tick">${icon('check')}</span>`;
+      grid.append(tile);
+    }
   }
 
   async #onBackgroundUpload(input) {
@@ -467,15 +481,49 @@ export class SettingsScreen {
     input.value = '';
     if (!file) return;
     try {
-      await saveCustomBackground(file);
-      if (this.customBackgroundUrl) URL.revokeObjectURL(this.customBackgroundUrl);
-      this.customBackgroundUrl = URL.createObjectURL(file);
-      config.set('background', 'custom');
+      const id = await addBackground(file);
+      this.customBackgrounds.set(id, { url: URL.createObjectURL(file), name: file.name });
+      this.customBackgroundsLoaded = true;
+      config.set('background', customValue(id));
       this.rerender(true);
-      toast(`Fondo agregado: ${file.name}`);
+      toast(`Fondo importado: ${file.name}`);
     } catch (error) {
-      toast(error?.message || 'No se pudo agregar el fondo.', 4200);
+      toast(error?.message || 'No se pudo importar el fondo.', 4200);
     }
+  }
+
+  /** Doble pulsación sobre un fondo propio: ofrece eliminarlo. */
+  #openBackgroundMenu(value) {
+    this.onBackgroundMenu?.({
+      title: 'Fondo importado',
+      subtitle: 'Elige qué hacer con este fondo.',
+      fallbackFid: 'bg:add',
+      actions: [
+        {
+          id: 'delete-bg',
+          label: 'Eliminar fondo',
+          icon: 'trash',
+          danger: true,
+          onSelect: () => this.#deleteCustomBackground(value),
+        },
+      ],
+    });
+  }
+
+  async #deleteCustomBackground(value) {
+    const id = value.slice('custom:'.length);
+    try {
+      await deleteBackground(id);
+    } catch (error) {
+      toast(error?.message || 'No se pudo eliminar el fondo.', 4200);
+      return;
+    }
+    const entry = this.customBackgrounds.get(id);
+    if (entry) URL.revokeObjectURL(entry.url);
+    this.customBackgrounds.delete(id);
+    if (config.get('background') === value) config.set('background', 'aurora');
+    this.rerender(false);
+    toast('Fondo eliminado');
   }
 
   // ---------------------------------------------------------------- Pantalla
@@ -524,8 +572,8 @@ export class SettingsScreen {
         this.rerender(true);
         break;
       case 'bg':
-        if (el.dataset.id === 'custom' && !this.customBackgroundUrl) {
-          toast('Primero agrega una imagen con el botón Agregar fondo.');
+        if (el.dataset.id.startsWith('custom:')) {
+          this.#pressCustomBackground(el.dataset.id);
           break;
         }
         config.set('background', el.dataset.id);
@@ -567,6 +615,23 @@ export class SettingsScreen {
       default:
         break;
     }
+  }
+
+  /** Una pulsación aplica el fondo; dos seguidas abren el menú para eliminarlo. */
+  #pressCustomBackground(value) {
+    if (this.pendingBg?.value === value) {
+      clearTimeout(this.pendingBg.timer);
+      this.pendingBg = null;
+      this.#openBackgroundMenu(value);
+      return;
+    }
+    clearTimeout(this.pendingBg?.timer);
+    const timer = setTimeout(() => {
+      this.pendingBg = null;
+      config.set('background', value);
+      this.rerender(true);
+    }, DOUBLE_PRESS_MS);
+    this.pendingBg = { value, timer };
   }
 
   #startCapture(action) {

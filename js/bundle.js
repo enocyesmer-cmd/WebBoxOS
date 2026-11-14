@@ -822,9 +822,9 @@ class KeyboardInput {
 const APPS = [
   { id: 'youtube', name: 'YouTube', icon: 'youtube', c1: '#b91c1c', c2: '#f87171', screen: 'youtube' },
   { id: 'movies', name: 'Películas', icon: 'film', c1: '#7c2d12', c2: '#f59e0b', screen: 'movies' },
-  { id: 'videos', name: 'Videos', icon: 'play', c1: '#ff5f6d', c2: '#ffa751' },
-  { id: 'music', name: 'Música', icon: 'music', c1: '#7f5af0', c2: '#2cb1ff' },
-  { id: 'photos', name: 'Fotos', icon: 'photo', c1: '#11998e', c2: '#7ee08f' },
+  { id: 'videos', name: 'Videos', icon: 'play', c1: '#ff5f6d', c2: '#ffa751', screen: 'files', location: 'videos' },
+  { id: 'music', name: 'Música', icon: 'music', c1: '#7f5af0', c2: '#2cb1ff', screen: 'files', location: 'music' },
+  { id: 'photos', name: 'Fotos', icon: 'photo', c1: '#11998e', c2: '#7ee08f', screen: 'files', location: 'photos' },
   { id: 'browser', name: 'Navegador', icon: 'globe', c1: '#2563eb', c2: '#22d3ee' },
   { id: 'games', name: 'Juegos', icon: 'gamepad', c1: '#e11d74', c2: '#9333ea', screen: 'games' },
   { id: 'tv', name: 'TV en vivo', icon: 'tv', c1: '#f59e0b', c2: '#ef4444' },
@@ -855,7 +855,51 @@ const BACKGROUNDS = [
   { id: 'sunset', name: 'Atardecer', file: 'assets/backgrounds/sunset.svg' },
   { id: 'graphite', name: 'Grafito', file: 'assets/backgrounds/graphite.svg' },
 ];
-    Object.assign(exports, { APPS, FAVORITES, DEFAULT_RECENTS, RECOMMENDED, BACKGROUNDS });
+
+/** Carpetas de contenido que el usuario puede indicar en Aplicaciones. */
+const MEDIA_LOCATIONS = [
+  { key: 'music', label: 'Música', icon: 'music' },
+  { key: 'photos', label: 'Fotos', icon: 'photo' },
+  { key: 'videos', label: 'Videos', icon: 'film' },
+];
+    Object.assign(exports, { APPS, FAVORITES, DEFAULT_RECENTS, RECOMMENDED, BACKGROUNDS, MEDIA_LOCATIONS });
+  };
+  __modules["js/data/logos.js"] = function (module, exports, __require) {
+/**
+ * Logotipos a color de las aplicaciones (SVG propio, viewBox 48x48).
+ * YouTube usa su forma reconocible (rectángulo rojo con triángulo blanco).
+ * Cualquier aplicación sin logo aquí usa el icono de trazo por defecto.
+ */
+const LOGOS = {
+  youtube:
+    '<rect x="3" y="10" width="42" height="28" rx="9" fill="#ff0000"/><path d="M20 17.5v13l11-6.5z" fill="#fff"/>',
+  movies:
+    '<rect x="5" y="7" width="38" height="34" rx="6" fill="#f59e0b"/><g fill="#fff"><rect x="8" y="10" width="4" height="4" rx="1"/><rect x="8" y="18" width="4" height="4" rx="1"/><rect x="8" y="26" width="4" height="4" rx="1"/><rect x="8" y="34" width="4" height="4" rx="1"/><rect x="36" y="10" width="4" height="4" rx="1"/><rect x="36" y="18" width="4" height="4" rx="1"/><rect x="36" y="26" width="4" height="4" rx="1"/><rect x="36" y="34" width="4" height="4" rx="1"/></g><path d="M20 17v14l11-7z" fill="#7c2d12"/>',
+  videos:
+    '<circle cx="24" cy="24" r="20" fill="#ff5f6d"/><circle cx="24" cy="24" r="20" fill="url(#g-videos)"/><path d="M19.500 15.500v17l14-8.500z" fill="#fff"/><defs><linearGradient id="g-videos" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff5f6d"/><stop offset="1" stop-color="#ffa751"/></linearGradient></defs>',
+  music:
+    '<circle cx="24" cy="24" r="20" fill="url(#g-music)"/><path d="M20 31.500V16.500l11-2.500v14" fill="none" stroke="#fff" stroke-width="2.600" stroke-linecap="round" stroke-linejoin="round"/><circle cx="17" cy="32" r="3.600" fill="#fff"/><circle cx="28" cy="29" r="3.600" fill="#fff"/><defs><linearGradient id="g-music" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7f5af0"/><stop offset="1" stop-color="#2cb1ff"/></linearGradient></defs>',
+  photos:
+    '<g opacity=".92"><ellipse cx="24" cy="13" rx="7" ry="11" fill="#ea4335"/><ellipse cx="35" cy="24" rx="11" ry="7" fill="#fbbc04"/><ellipse cx="24" cy="35" rx="7" ry="11" fill="#34a853"/><ellipse cx="13" cy="24" rx="11" ry="7" fill="#4285f4"/></g>',
+  browser:
+    '<circle cx="24" cy="24" r="20" fill="#2563eb"/><g fill="none" stroke="#fff" stroke-width="2.200" stroke-linecap="round"><circle cx="24" cy="24" r="13"/><path d="M11 24h26M24 11c5 5 5 21 0 26M24 11c-5 5-5 21 0 26"/></g>',
+  games:
+    '<path d="M14 15h20a9 9 0 0 1 8.700 11.300l-1.500 6a4.800 4.800 0 0 1-8.400 1.700L30 29H18l-2.800 5a4.800 4.800 0 0 1-8.400-1.700l-1.500-6A9 9 0 0 1 14 15z" fill="url(#g-games)"/><path d="M16 20v8M12 24h8" stroke="#fff" stroke-width="2.600" stroke-linecap="round"/><circle cx="31" cy="22" r="2" fill="#fff"/><circle cx="36" cy="26" r="2" fill="#fff"/><defs><linearGradient id="g-games" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e11d74"/><stop offset="1" stop-color="#9333ea"/></linearGradient></defs>',
+  tv:
+    '<rect x="4" y="9" width="40" height="26" rx="5" fill="#ef4444"/><rect x="8" y="13" width="32" height="18" rx="2.500" fill="#fde68a"/><path d="M15 41h18M24 35v6" stroke="#f59e0b" stroke-width="3" stroke-linecap="round"/>',
+  files:
+    '<path d="M4 13a4 4 0 0 1 4-4h11l4 5h17a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z" fill="#fbbf24"/><path d="M4 20h40v15a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z" fill="#f59e0b"/>',
+  news:
+    '<rect x="6" y="6" width="36" height="36" rx="7" fill="#0ea5e9"/><rect x="11" y="12" width="14" height="10" rx="2" fill="#fff"/><path d="M29 13h8M29 18h8M11 28h26M11 34h19" stroke="#fff" stroke-width="2.600" stroke-linecap="round"/>',
+};
+
+/** Marcado SVG del logo de una aplicación, o '' si no tiene. */
+function logo(id, cls = '') {
+  const body = LOGOS[id];
+  if (!body) return '';
+  return `<svg class="logo ${cls}" viewBox="0 0 48 48" aria-hidden="true" focusable="false">${body}</svg>`;
+}
+    Object.assign(exports, { LOGOS, logo });
   };
   __modules["js/icons.js"] = function (module, exports, __require) {
 /**
@@ -954,8 +998,13 @@ function toast(message, ms = 2800) {
  * Launcher: pantalla de inicio (filas de tarjetas) y pantalla de aplicaciones.
  * No maneja entradas directamente: las tarjetas son elementos `data-focusable`
  * y el administrador de foco hace `click()` al pulsar OK.
+ *
+ * Doble pulsación (dos clics, o OK dos veces seguidas) sobre una tarjeta abre el
+ * menú de edición (cambiar icono, eliminar). Una sola pulsación abre la aplicación
+ * tras una pequeña espera para poder distinguirla de la doble.
  */
-const { APPS, FAVORITES, RECOMMENDED, DEFAULT_RECENTS } = __require("js/data/apps.js");
+const { APPS, FAVORITES, RECOMMENDED, DEFAULT_RECENTS, MEDIA_LOCATIONS } = __require("js/data/apps.js");
+const { logo } = __require("js/data/logos.js");
 const { icon } = __require("js/icons.js");
 const { storage } = __require("js/core/storage.js");
 const { esc } = __require("js/ui.js");
@@ -963,40 +1012,84 @@ const { esc } = __require("js/ui.js");
 const APP_BY_ID = new Map(APPS.map((a) => [a.id, a]));
 const REC_BY_ID = new Map(RECOMMENDED.map((r) => [r.id, r]));
 const MAX_RECENTS = 8;
+const DOUBLE_PRESS_MS = 350;
 
 class Launcher {
   /**
-   * @param {{homeEl:HTMLElement, appsEl:HTMLElement, onOpen:(item:object)=>void}} opts
+   * @param {{homeEl:HTMLElement, appsEl:HTMLElement, onOpen:(item:object)=>void,
+   *   onMenu:(item:object)=>void, onChooseLocation:(key:string)=>void,
+   *   getLocations:()=>Record<string,{name:string}>}} opts
    */
-  constructor({ homeEl, appsEl, onOpen }) {
+  constructor({ homeEl, appsEl, onOpen, onMenu, onChooseLocation, getLocations }) {
     this.homeEl = homeEl;
     this.appsEl = appsEl;
     this.onOpen = onOpen;
+    this.onMenu = onMenu;
+    this.onChooseLocation = onChooseLocation;
+    this.getLocations = getLocations ?? (() => ({}));
     this.recents = this.#loadRecents();
+    this.hidden = new Set(storage.get('hiddenCards', []));
+    this.icons = this.#loadIcons();
+    this.pending = null;
 
     const handler = (e) => {
+      const loc = e.target.closest('[data-act="loc-choose"]');
+      if (loc) {
+        this.onChooseLocation?.(loc.dataset.loc);
+        return;
+      }
+      if (e.target.closest('[data-act="restore-hidden"]')) {
+        this.restoreAll();
+        return;
+      }
       const card = e.target.closest('[data-kind]');
       if (!card) return;
       const item =
         card.dataset.kind === 'app'
           ? APP_BY_ID.get(card.dataset.id)
           : REC_BY_ID.get(card.dataset.id);
-      if (item) this.onOpen({ ...item, kind: card.dataset.kind });
+      if (!item) return;
+      this.#press(card.dataset.kind, item);
     };
     homeEl.addEventListener('click', handler);
     appsEl.addEventListener('click', handler);
   }
 
+  /** Una pulsación espera; una segunda dentro del plazo abre el menú en lugar de la aplicación. */
+  #press(kind, item) {
+    const key = `${kind}:${item.id}`;
+    const payload = { ...item, kind };
+    if (this.pending?.key === key) {
+      clearTimeout(this.pending.timer);
+      this.pending = null;
+      this.onMenu?.(payload);
+      return;
+    }
+    clearTimeout(this.pending?.timer);
+    const timer = setTimeout(() => {
+      this.pending = null;
+      this.onOpen(payload);
+    }, DOUBLE_PRESS_MS);
+    this.pending = { key, timer };
+  }
+
   render() {
+    const favorites = FAVORITES.filter((id) => !this.hidden.has(id));
+    const recs = RECOMMENDED.filter((r) => !this.hidden.has(r.id));
+    const apps = APPS.filter((a) => !this.hidden.has(a.id));
+
     this.homeEl.innerHTML = `
-      ${this.#row('favorites', 'Aplicaciones favoritas', 'star', FAVORITES.map((id) => this.#appCard(APP_BY_ID.get(id), 'fav')).join(''))}
+      ${this.#row('favorites', 'Aplicaciones favoritas', 'star', favorites.map((id) => this.#appCard(APP_BY_ID.get(id), 'fav')).join('') || this.#emptyRow())}
       ${this.#row('recents', 'Recientes', 'clock', this.#recentsHTML())}
-      ${this.#row('recommended', 'Recomendado para ti', 'film', RECOMMENDED.map((r) => this.#recCard(r)).join(''))}
+      ${this.#row('recommended', 'Recomendado para ti', 'film', recs.map((r) => this.#recCard(r)).join('') || this.#emptyRow())}
     `;
 
     this.appsEl.innerHTML = `
       <h1 class="screen-title">Aplicaciones</h1>
-      <div class="grid">${APPS.map((a) => this.#appCard(a, 'all')).join('')}</div>
+      ${this.#locationsHTML()}
+      <p class="apps-tip">Pulsa dos veces una aplicación para cambiar su icono o eliminarla.</p>
+      <div class="grid">${apps.map((a) => this.#appCard(a, 'all')).join('')}</div>
+      ${this.#restoreHTML()}
     `;
   }
 
@@ -1009,7 +1102,54 @@ class Launcher {
     if (track) track.innerHTML = this.#recentsHTML();
   }
 
+  // ------------------------------------------------- edición de tarjetas
+
+  hasCustomIcon(id) {
+    return Boolean(this.icons[id]);
+  }
+
+  setIcon(id, dataUrl) {
+    this.icons[id] = dataUrl;
+    storage.set('cardIcons', this.icons);
+    this.render();
+  }
+
+  resetIcon(id) {
+    delete this.icons[id];
+    storage.set('cardIcons', this.icons);
+    this.render();
+  }
+
+  hide(id) {
+    this.hidden.add(id);
+    storage.set('hiddenCards', [...this.hidden]);
+    this.render();
+  }
+
+  restoreAll() {
+    if (!this.hidden.size) return;
+    this.hidden.clear();
+    storage.set('hiddenCards', []);
+    this.render();
+    this.onRestored?.();
+  }
+
+  hiddenCount() {
+    return this.hidden.size;
+  }
+
   // ---------------------------------------------------------------- interno
+
+  #loadIcons() {
+    const saved = storage.get('cardIcons', {});
+    const out = {};
+    if (saved && typeof saved === 'object') {
+      for (const [id, url] of Object.entries(saved)) {
+        if (typeof url === 'string' && url.startsWith('data:image/')) out[id] = url;
+      }
+    }
+    return out;
+  }
 
   #loadRecents() {
     const saved = storage.get('recents', null);
@@ -1020,8 +1160,44 @@ class Launcher {
   }
 
   #recentsHTML() {
-    if (!this.recents.length) return '<p class="row-empty">Aún no has abierto aplicaciones.</p>';
-    return this.recents.map((id) => this.#appCard(APP_BY_ID.get(id), 'recent')).join('');
+    const list = this.recents.filter((id) => !this.hidden.has(id));
+    if (!list.length) return '<p class="row-empty">Aún no has abierto aplicaciones.</p>';
+    return list.map((id) => this.#appCard(APP_BY_ID.get(id), 'recent')).join('');
+  }
+
+  #emptyRow() {
+    return '<p class="row-empty">Nada por aquí. Puedes restaurar lo eliminado desde Aplicaciones.</p>';
+  }
+
+  #locationsHTML() {
+    const saved = this.getLocations();
+    const rows = MEDIA_LOCATIONS.map((loc) => {
+      const info = saved[loc.key];
+      const where = info ? esc(info.name) : 'Sin elegir';
+      return `
+        <div class="loc-row${info ? ' is-set' : ''}" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="loc:${loc.key}" data-act="loc-choose" data-loc="${loc.key}">
+          <span class="loc-ico">${icon(loc.icon)}</span>
+          <span class="loc-text"><b>${esc(loc.label)}</b><small>${where}</small></span>
+          <span class="loc-action">${info ? 'Cambiar' : 'Elegir carpeta'}</span>
+        </div>`;
+    }).join('');
+    return `
+      <section class="locations" aria-label="Dónde están tus archivos">
+        <h2 class="locations-title"><span class="row-icon">${icon('folder')}</span>Dónde están tus archivos</h2>
+        <p class="locations-sub">Indica la carpeta de tu música, fotos y videos. Al abrir esas aplicaciones, el Gestor de archivos entra directo ahí.</p>
+        <div class="locations-list">${rows}</div>
+      </section>`;
+  }
+
+  #restoreHTML() {
+    if (!this.hidden.size) return '';
+    const n = this.hidden.size;
+    return `
+      <div class="apps-restore">
+        <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
+             data-fid="apps:restore" data-act="restore-hidden">${icon('reset')}Restaurar ${n === 1 ? 'el elemento eliminado' : `los ${n} elementos eliminados`}</div>
+      </div>`;
   }
 
   #row(id, title, iconName, cards) {
@@ -1032,12 +1208,21 @@ class Launcher {
       </section>`;
   }
 
+  /** Arte de la tarjeta: foto propia > logo a color > icono de trazo. */
+  #art(item) {
+    const custom = this.icons[item.id];
+    if (custom) return `<span class="card-art card-art--plate"><img class="card-img" src="${custom}" alt=""></span>`;
+    const svg = logo(item.id);
+    if (svg) return `<span class="card-art card-art--plate">${svg}</span>`;
+    return `<span class="card-art">${icon(item.icon)}</span>`;
+  }
+
   #appCard(app, prefix) {
     return `
       <div class="card" role="button" tabindex="-1" data-focusable data-zone="main"
            data-kind="app" data-id="${app.id}" data-fid="${prefix}:${app.id}"
            style="--c1:${app.c1};--c2:${app.c2}" aria-label="${esc(app.name)}">
-        <span class="card-art">${icon(app.icon)}</span>
+        ${this.#art(app)}
         <span class="card-label">${esc(app.name)}</span>
       </div>`;
   }
@@ -1047,24 +1232,26 @@ class Launcher {
       <div class="card card--wide" role="button" tabindex="-1" data-focusable data-zone="main"
            data-kind="rec" data-id="${item.id}" data-fid="rec:${item.id}"
            style="--c1:${item.c1};--c2:${item.c2}" aria-label="${esc(item.name)}">
-        <span class="card-art">${icon(item.icon)}</span>
+        ${this.#art(item)}
         <span class="card-label">${esc(item.name)}</span>
         <span class="card-sub">${esc(item.subtitle)}</span>
       </div>`;
   }
 }
-    Object.assign(exports, { Launcher });
+    Object.assign(exports, { DOUBLE_PRESS_MS, Launcher });
   };
   __modules["js/backgroundStore.js"] = function (module, exports, __require) {
 /**
- * Almacenamiento persistente del fondo personalizado de WebBox OS.
- * La imagen se guarda como Blob en IndexedDB, nunca como texto base64 en ajustes.
+ * Almacenamiento persistente de los fondos personalizados de WebBox OS.
+ * Cada imagen se guarda como Blob en IndexedDB (nunca como base64 en ajustes),
+ * así que se pueden importar varios y siguen disponibles al reabrir el navegador.
  */
 const DB_NAME = 'webbox-backgrounds';
 const DB_VERSION = 1;
 const STORE_NAME = 'wallpapers';
-const RECORD_KEY = 'custom';
+const LEGACY_KEY = 'custom'; // el único fondo que guardaba la versión anterior
 const MAX_BACKGROUND_SIZE = 20 * 1024 * 1024;
+const MAX_BACKGROUNDS = 30;
 const ALLOWED_TYPES = new Set([
   'image/jpeg',
   'image/png',
@@ -1115,8 +1302,18 @@ function requestResult(request) {
   });
 }
 
-/** Guarda una imagen raster para que siga disponible después de cerrar el navegador. */
-async function saveCustomBackground(file) {
+/** Valor de configuración que representa un fondo propio: "custom:<id>". */
+const customValue = (id) => `custom:${id}`;
+
+/** Id de almacenamiento a partir del valor de configuración ("custom" antiguo o "custom:<id>"). */
+function customIdFromValue(value) {
+  if (value === 'custom') return LEGACY_KEY;
+  if (typeof value === 'string' && value.startsWith('custom:')) return value.slice(7);
+  return null;
+}
+
+/** Guarda una imagen nueva y devuelve su id. */
+async function addBackground(file) {
   if (!(file instanceof Blob)) throw new Error('Selecciona una imagen válida.');
   if (!ALLOWED_TYPES.has(file.type)) {
     throw new Error('Formato no compatible. Usa JPG, PNG, WEBP, GIF, AVIF o BMP.');
@@ -1125,25 +1322,47 @@ async function saveCustomBackground(file) {
   if (file.size > MAX_BACKGROUND_SIZE) throw new Error('La imagen supera el límite de 20 MB.');
 
   const db = await openDb();
+  const count = await requestResult(db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).count());
+  if (count >= MAX_BACKGROUNDS) throw new Error(`Ya tienes ${MAX_BACKGROUNDS} fondos. Elimina alguno para agregar otro.`);
+
+  const id = `bg-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const tx = db.transaction(STORE_NAME, 'readwrite');
   tx.objectStore(STORE_NAME).put({
-    id: RECORD_KEY,
+    id,
     blob: file,
     name: String(file.name || 'Fondo personalizado').slice(0, 180),
     type: file.type,
     updatedAt: Date.now(),
   });
   await transactionDone(tx);
+  return id;
 }
 
-/** Recupera el Blob del fondo personalizado, o null cuando aún no existe. */
-async function getCustomBackground() {
+/** Todos los fondos propios, del más antiguo al más nuevo: [{ id, name, blob }]. */
+async function listBackgrounds() {
   const db = await openDb();
-  const tx = db.transaction(STORE_NAME, 'readonly');
-  const record = await requestResult(tx.objectStore(STORE_NAME).get(RECORD_KEY));
+  const records = await requestResult(db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll());
+  return records
+    .filter((r) => r?.blob instanceof Blob)
+    .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0))
+    .map(({ id, name, blob }) => ({ id, name, blob }));
+}
+
+/** Blob de un fondo propio, o null si ya no existe. */
+async function getBackground(id) {
+  const db = await openDb();
+  const record = await requestResult(db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(id));
   return record?.blob instanceof Blob ? record.blob : null;
 }
-    Object.assign(exports, { saveCustomBackground, getCustomBackground });
+
+/** Elimina un fondo propio. */
+async function deleteBackground(id) {
+  const db = await openDb();
+  const tx = db.transaction(STORE_NAME, 'readwrite');
+  tx.objectStore(STORE_NAME).delete(id);
+  await transactionDone(tx);
+}
+    Object.assign(exports, { customValue, customIdFromValue, addBackground, listBackgrounds, getBackground, deleteBackground });
   };
   __modules["js/settings.js"] = function (module, exports, __require) {
 /**
@@ -1160,7 +1379,8 @@ const { storage } = __require("js/core/storage.js");
 const { bus } = __require("js/core/events.js");
 const { icon } = __require("js/icons.js");
 const { BACKGROUNDS } = __require("js/data/apps.js");
-const { getCustomBackground, saveCustomBackground } = __require("js/backgroundStore.js");
+const { listBackgrounds, addBackground, deleteBackground, customValue } = __require("js/backgroundStore.js");
+const { DOUBLE_PRESS_MS } = __require("js/launcher.js");
 const { esc, toast } = __require("js/ui.js");
 
 const TABS = [
@@ -1209,17 +1429,19 @@ class SettingsScreen {
    * @param {{root:HTMLElement, focus:import('./core/focus.js').FocusManager,
    *          gamepad:import('./input/gamepad.js').GamepadManager}} opts
    */
-  constructor({ root, focus, gamepad }) {
+  constructor({ root, focus, gamepad, onBackgroundMenu }) {
     this.root = root;
     this.focus = focus;
     this.gamepad = gamepad;
+    this.onBackgroundMenu = onBackgroundMenu;
+    this.pendingBg = null;
     this.active = 'device';
     this.capturing = null; // acción que se está remapeando
     this.confirmReset = false;
     this.live = new Map(); // index -> { cells, bars }
-    this.customBackgroundUrl = null;
+    this.customBackgrounds = new Map(); // id -> { url, name }
+    this.customBackgroundsLoaded = false;
     this.customBackgroundLoading = false;
-    this.customBackgroundVersion = 0;
 
     root.innerHTML = `
       <div class="settings">
@@ -1566,48 +1788,59 @@ class SettingsScreen {
     ).join('');
     return `
       <h2 class="panel-title">Fondo de pantalla</h2>
-      <p class="background-description">Elige uno de los fondos incluidos o agrega una imagen de tu equipo.</p>
-      ${this.#action('bg-add', 'bg:add', 'Agregar fondo', 'Selecciona una imagen JPG, PNG, WEBP, GIF, AVIF o BMP (máximo 20 MB)', 'plus')}
+      <p class="background-description">Elige uno de los fondos incluidos o importa tus propias imágenes. Pulsa dos veces un fondo tuyo para eliminarlo.</p>
+      ${this.#action('bg-add', 'bg:add', 'Importar fondo', 'Selecciona una imagen JPG, PNG, WEBP, GIF, AVIF o BMP (máximo 20 MB). Puedes importar varias.', 'plus')}
       <input type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/bmp" data-bg-upload hidden>
       <div class="bg-grid" data-bg-grid>${tiles}</div>`;
   }
 
   async #loadCustomBackgroundPreview() {
-    if (this.customBackgroundUrl || this.customBackgroundLoading) {
-      this.#syncCustomBackgroundTile();
+    if (this.customBackgroundsLoaded) {
+      this.#syncCustomBackgroundTiles();
       return;
     }
+    if (this.customBackgroundLoading) return;
     this.customBackgroundLoading = true;
-    const version = ++this.customBackgroundVersion;
     try {
-      const blob = await getCustomBackground();
-      if (version !== this.customBackgroundVersion || this.active !== 'background') return;
-      if (blob) this.customBackgroundUrl = URL.createObjectURL(blob);
-      this.#syncCustomBackgroundTile();
+      const list = await listBackgrounds();
+      for (const { id, name, blob } of list) {
+        if (!this.customBackgrounds.has(id)) {
+          this.customBackgrounds.set(id, { url: URL.createObjectURL(blob), name });
+        }
+      }
+      this.customBackgroundsLoaded = true;
+      this.#syncCustomBackgroundTiles();
     } catch (error) {
-      console.warn('[WebBox OS] No se pudo cargar la vista previa del fondo.', error);
+      console.warn('[WebBox OS] No se pudieron cargar los fondos personalizados.', error);
     } finally {
-      if (version === this.customBackgroundVersion) this.customBackgroundLoading = false;
+      this.customBackgroundLoading = false;
     }
   }
 
-  #syncCustomBackgroundTile() {
+  /** Dibuja una casilla por cada fondo importado, al final de la cuadrícula. */
+  #syncCustomBackgroundTiles() {
     const grid = this.panelEl.querySelector('[data-bg-grid]');
-    if (!grid) return;
-    grid.querySelector('[data-id="custom"]')?.remove();
-    if (!this.customBackgroundUrl) return;
-    const tile = document.createElement('div');
-    tile.className = `bg-tile${config.get('background') === 'custom' ? ' selected' : ''}`;
-    tile.setAttribute('role', 'button');
-    tile.setAttribute('tabindex', '-1');
-    tile.setAttribute('data-focusable', '');
-    tile.dataset.zone = 'settings-panel';
-    tile.dataset.fid = 'bg:custom';
-    tile.dataset.act = 'bg';
-    tile.dataset.id = 'custom';
-    tile.style.backgroundImage = `url("${this.customBackgroundUrl}")`;
-    tile.innerHTML = `<span>Mi fondo</span><span class="tick">${icon('check')}</span>`;
-    grid.append(tile);
+    if (!grid || this.active !== 'background') return;
+    for (const old of grid.querySelectorAll('[data-custom]')) old.remove();
+    const current = config.get('background');
+    let number = 0;
+    for (const [id, { url }] of this.customBackgrounds) {
+      number += 1;
+      const value = customValue(id);
+      const tile = document.createElement('div');
+      tile.className = `bg-tile bg-tile--custom${current === value ? ' selected' : ''}`;
+      tile.setAttribute('role', 'button');
+      tile.setAttribute('tabindex', '-1');
+      tile.setAttribute('data-focusable', '');
+      tile.setAttribute('data-custom', '');
+      tile.dataset.zone = 'settings-panel';
+      tile.dataset.fid = `bg:${value}`;
+      tile.dataset.act = 'bg';
+      tile.dataset.id = value;
+      tile.style.backgroundImage = `url("${url}")`;
+      tile.innerHTML = `<span>Mi fondo ${number}</span><span class="tick">${icon('check')}</span>`;
+      grid.append(tile);
+    }
   }
 
   async #onBackgroundUpload(input) {
@@ -1615,15 +1848,49 @@ class SettingsScreen {
     input.value = '';
     if (!file) return;
     try {
-      await saveCustomBackground(file);
-      if (this.customBackgroundUrl) URL.revokeObjectURL(this.customBackgroundUrl);
-      this.customBackgroundUrl = URL.createObjectURL(file);
-      config.set('background', 'custom');
+      const id = await addBackground(file);
+      this.customBackgrounds.set(id, { url: URL.createObjectURL(file), name: file.name });
+      this.customBackgroundsLoaded = true;
+      config.set('background', customValue(id));
       this.rerender(true);
-      toast(`Fondo agregado: ${file.name}`);
+      toast(`Fondo importado: ${file.name}`);
     } catch (error) {
-      toast(error?.message || 'No se pudo agregar el fondo.', 4200);
+      toast(error?.message || 'No se pudo importar el fondo.', 4200);
     }
+  }
+
+  /** Doble pulsación sobre un fondo propio: ofrece eliminarlo. */
+  #openBackgroundMenu(value) {
+    this.onBackgroundMenu?.({
+      title: 'Fondo importado',
+      subtitle: 'Elige qué hacer con este fondo.',
+      fallbackFid: 'bg:add',
+      actions: [
+        {
+          id: 'delete-bg',
+          label: 'Eliminar fondo',
+          icon: 'trash',
+          danger: true,
+          onSelect: () => this.#deleteCustomBackground(value),
+        },
+      ],
+    });
+  }
+
+  async #deleteCustomBackground(value) {
+    const id = value.slice('custom:'.length);
+    try {
+      await deleteBackground(id);
+    } catch (error) {
+      toast(error?.message || 'No se pudo eliminar el fondo.', 4200);
+      return;
+    }
+    const entry = this.customBackgrounds.get(id);
+    if (entry) URL.revokeObjectURL(entry.url);
+    this.customBackgrounds.delete(id);
+    if (config.get('background') === value) config.set('background', 'aurora');
+    this.rerender(false);
+    toast('Fondo eliminado');
   }
 
   // ---------------------------------------------------------------- Pantalla
@@ -1672,8 +1939,8 @@ class SettingsScreen {
         this.rerender(true);
         break;
       case 'bg':
-        if (el.dataset.id === 'custom' && !this.customBackgroundUrl) {
-          toast('Primero agrega una imagen con el botón Agregar fondo.');
+        if (el.dataset.id.startsWith('custom:')) {
+          this.#pressCustomBackground(el.dataset.id);
           break;
         }
         config.set('background', el.dataset.id);
@@ -1715,6 +1982,23 @@ class SettingsScreen {
       default:
         break;
     }
+  }
+
+  /** Una pulsación aplica el fondo; dos seguidas abren el menú para eliminarlo. */
+  #pressCustomBackground(value) {
+    if (this.pendingBg?.value === value) {
+      clearTimeout(this.pendingBg.timer);
+      this.pendingBg = null;
+      this.#openBackgroundMenu(value);
+      return;
+    }
+    clearTimeout(this.pendingBg?.timer);
+    const timer = setTimeout(() => {
+      this.pendingBg = null;
+      config.set('background', value);
+      this.rerender(true);
+    }, DOUBLE_PRESS_MS);
+    this.pendingBg = { value, timer };
   }
 
   #startCapture(action) {
@@ -3072,6 +3356,12 @@ class FilesScreen {
     }
   }
 
+  /** Abre una carpeta concreta (por ejemplo, la de música) como raíz del gestor. */
+  async openLocation(root) {
+    if (this.loading) return;
+    await this.#setRoot(root);
+  }
+
   async openInternal() {
     if (this.loading) return;
     try {
@@ -3970,6 +4260,172 @@ const MOVIES_DEFAULTS = [
 ];
     Object.assign(exports, { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS });
   };
+  __modules["js/cardMenu.js"] = function (module, exports, __require) {
+/**
+ * Menú de acciones que aparece al pulsar dos veces una tarjeta (o un fondo).
+ * Cada acción puede pedir un archivo: se abre el selector del sistema y el
+ * archivo elegido se entrega a `onSelect(file)`.
+ * Es un ámbito de foco propio, así que se maneja con mando, teclado y mouse.
+ */
+const { icon } = __require("js/icons.js");
+const { esc } = __require("js/ui.js");
+
+class CardMenu {
+  /** @param {{el:HTMLElement, focus:import('./core/focus.js').FocusManager}} opts */
+  constructor({ el, focus }) {
+    this.el = el;
+    this.focus = focus;
+    this.isOpen = false;
+    this.spec = null;
+    this.returnFid = null;
+    this.pendingAction = null;
+
+    el.addEventListener('click', (e) => this.#onClick(e));
+    el.addEventListener('change', (e) => this.#onFile(e));
+  }
+
+  /**
+   * @param {{title:string, subtitle?:string, fallbackFid?:string,
+   *   actions:{id:string,label:string,icon?:string,danger?:boolean,file?:boolean,
+   *   onSelect:(file?:File)=>Promise<void>|void}[]}} spec
+   */
+  open(spec) {
+    if (this.isOpen) return;
+    this.spec = spec;
+    this.returnFid = this.focus.current?.dataset.fid ?? null;
+    const buttons = spec.actions
+      .map(
+        (a) => `
+        <div class="btn menu-btn${a.danger ? ' btn--danger' : ''}" role="button" tabindex="-1" data-focusable
+             data-zone="cardmenu" data-fid="cm:${esc(a.id)}" data-act="cm-action" data-id="${esc(a.id)}">
+          ${icon(a.icon ?? 'star')}${esc(a.label)}
+        </div>`,
+      )
+      .join('');
+    this.el.innerHTML = `
+      <div class="dialog-card menu-card">
+        <h2>${esc(spec.title)}</h2>
+        ${spec.subtitle ? `<p class="dialog-hint">${esc(spec.subtitle)}</p>` : ''}
+        <div class="menu-actions">
+          ${buttons}
+          <div class="btn menu-btn btn--ghost" role="button" tabindex="-1" data-focusable
+               data-zone="cardmenu" data-fid="cm:cancel" data-act="cm-cancel">${icon('back')}Cancelar</div>
+        </div>
+        <input type="file" accept="image/*" data-cm-file hidden>
+      </div>`;
+    this.el.hidden = false;
+    this.isOpen = true;
+    this.focus.clear();
+    this.focus.pushScope(this.el);
+    this.focus.focusFirst('[data-focusable]');
+  }
+
+  close({ restore = true } = {}) {
+    if (!this.isOpen) return false;
+    this.isOpen = false;
+    this.el.hidden = true;
+    this.el.innerHTML = '';
+    this.focus.popScope();
+    if (!restore) return false;
+    return this.#restoreFocus();
+  }
+
+  #restoreFocus() {
+    return (
+      this.focus.focusByFid(this.returnFid) ||
+      (this.spec?.fallbackFid && this.focus.focusByFid(this.spec.fallbackFid)) ||
+      this.focus.focusFirst('[data-zone="main"]')
+    );
+  }
+
+  #find(id) {
+    return this.spec?.actions.find((a) => a.id === id);
+  }
+
+  async #run(action, file) {
+    // Se cierra primero para que la acción pueda volver a dibujar la pantalla.
+    this.close({ restore: false });
+    try {
+      await action.onSelect(file);
+    } finally {
+      this.#restoreFocus();
+    }
+  }
+
+  #onClick(e) {
+    const el = e.target.closest('[data-act]');
+    if (!el) return;
+    if (el.dataset.act === 'cm-cancel') {
+      this.close();
+      return;
+    }
+    if (el.dataset.act !== 'cm-action') return;
+    const action = this.#find(el.dataset.id);
+    if (!action) return;
+    if (action.file) {
+      this.pendingAction = action;
+      this.el.querySelector('[data-cm-file]')?.click();
+    } else {
+      this.#run(action);
+    }
+  }
+
+  #onFile(e) {
+    if (!e.target.matches?.('[data-cm-file]')) return;
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    const action = this.pendingAction;
+    this.pendingAction = null;
+    if (file && action) this.#run(action, file);
+  }
+}
+    Object.assign(exports, { CardMenu });
+  };
+  __modules["js/core/images.js"] = function (module, exports, __require) {
+/** Utilidades de imagen: convierte una foto elegida por el usuario en un icono cuadrado y ligero. */
+
+const MAX_SOURCE_BYTES = 12 * 1024 * 1024;
+
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('No se pudo leer la imagen.'));
+    };
+    img.src = url;
+  });
+}
+
+/** Recorta al centro (cover) y reduce a `size`×`size`. Devuelve una URL de datos (WebP o PNG). */
+async function toIconDataUrl(file, size = 256) {
+  if (!(file instanceof Blob) || !String(file.type).startsWith('image/')) {
+    throw new Error('Elige un archivo de imagen (JPG, PNG, WEBP, GIF, SVG…).');
+  }
+  if (file.size > MAX_SOURCE_BYTES) throw new Error('La imagen supera el límite de 12 MB.');
+
+  const img = await loadImage(file);
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  if (!w || !h) throw new Error('La imagen no tiene dimensiones válidas.');
+
+  const side = Math.min(w, h);
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, size, size);
+
+  const webp = canvas.toDataURL('image/webp', 0.88);
+  return webp.startsWith('data:image/webp') ? webp : canvas.toDataURL('image/png');
+}
+    Object.assign(exports, { toIconDataUrl });
+  };
   __modules["js/main.js"] = function (module, exports, __require) {
 /**
  * WebBox OS — punto de entrada.
@@ -3989,11 +4445,15 @@ const { Player } = __require("js/player.js");
 const { Dialog } = __require("js/dialog.js");
 const { FilesScreen } = __require("js/files.js");
 const { GamesScreen } = __require("js/games.js");
-const { getHandle, saveHandle, removeHandle, getStoredFile } = __require("js/fileSystem.js");
+const { getHandle, saveHandle, removeHandle, getStoredFile, supportsFileSystemAccess } = __require("js/fileSystem.js");
 const { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS } = __require("js/data/library.js");
 const { parseMediaUrl } = __require("js/core/media.js");
 const { BACKGROUNDS } = __require("js/data/apps.js");
-const { getCustomBackground } = __require("js/backgroundStore.js");
+const { getBackground, customIdFromValue } = __require("js/backgroundStore.js");
+const { CardMenu } = __require("js/cardMenu.js");
+const { toIconDataUrl } = __require("js/core/images.js");
+const { storage } = __require("js/core/storage.js");
+const { MEDIA_LOCATIONS } = __require("js/data/apps.js");
 const { hydrateIcons, icon } = __require("js/icons.js");
 const { esc, toast } = __require("js/ui.js");
 
@@ -4013,10 +4473,11 @@ class WebBoxOS {
       movies: $('#screen-movies'),
       files: $('#screen-files'),
       games: $('#screen-games'),
-      emulators: $('#screen-emulators'),
       settings: $('#screen-settings'),
     };
     this.current = 'home';
+    this.navName = '';
+    this.mediaFolders = this.#loadMediaFolders();
     this.overlayOpen = false;
     this.overlayReturnFid = null;
     this.lastPointerMove = 0;
@@ -4031,9 +4492,14 @@ class WebBoxOS {
       homeEl: this.screens.home,
       appsEl: this.screens.apps,
       onOpen: (item) => this.openItem(item),
+      onMenu: (item) => this.#openCardMenu(item),
+      onChooseLocation: (key) => this.#chooseLocation(key),
+      getLocations: () => this.mediaFolders,
     });
+    this.launcher.onRestored = () => this.#enterScreen(this.current);
     this.player = new Player({ el: $('#player'), focus: this.focus });
     this.dialog = new Dialog({ el: $('#dialog'), focus: this.focus });
+    this.cardMenu = new CardMenu({ el: $('#cardmenu'), focus: this.focus });
     const common = {
       onPlay: (item, lib) => this.#playLibraryItem(item, lib),
       onAdd: (lib) => this.#openAddDialog(lib),
@@ -4092,6 +4558,7 @@ class WebBoxOS {
       root: this.screens.settings,
       focus: this.focus,
       gamepad: this.gamepad,
+      onBackgroundMenu: (spec) => this.cardMenu.open(spec),
     });
   }
 
@@ -4101,7 +4568,6 @@ class WebBoxOS {
     for (const lib of Object.values(this.libraries)) lib.render();
     this.files.render();
     this.games.render();
-    this.#renderEmulators();
     this.settings.render();
     this.#applyDisplay();
     this.#bindEvents();
@@ -4142,9 +4608,6 @@ class WebBoxOS {
     this.sidebar.addEventListener('click', (e) => {
       const item = e.target.closest('[data-screen]');
       if (item) this.navigate(item.dataset.screen, { enter: true });
-    });
-    this.screens.emulators.addEventListener('click', (e) => {
-      if (e.target.closest('[data-act="emulators-snes"]')) this.navigate('games', { enter: true });
     });
     bus.on('focus:change', () => this.#syncSidebar());
 
@@ -4219,22 +4682,29 @@ class WebBoxOS {
    * Cambia de pantalla. `enter` además mueve el foco al contenido.
    */
   navigate(name, { enter = false } = {}) {
-    if (!this.screens[name]) return;
-    if (this.current === 'games' && name !== 'games') this.games?.stop({ restore: false });
+    if (!this.screens[name] && name !== 'emulators') return;
+    // "Emuladores" abre directamente el emulador de SNES (la pantalla de juegos).
+    const view = name === 'emulators' ? 'games' : name;
+    if (this.current === 'games' && view !== 'games') this.games?.stop({ restore: false });
 
-    if (name !== this.current) {
-      for (const [key, el] of Object.entries(this.screens)) el.hidden = key !== name;
-      const el = this.screens[name];
+    if (view !== this.current) {
+      for (const [key, el] of Object.entries(this.screens)) el.hidden = key !== view;
+      const el = this.screens[view];
       el.classList.remove('is-entering');
       void el.offsetWidth; // reinicia la animación
       el.classList.add('is-entering');
-      this.current = name;
-      if (name === 'settings') this.settings.refresh();
+      this.current = view;
+      if (view === 'settings') this.settings.refresh();
+    }
+    if (name !== this.navName) {
+      this.navName = name;
       for (const item of this.sidebar.querySelectorAll('[data-screen]')) {
         item.classList.toggle('is-current', item.dataset.screen === name);
       }
+      const title = this.screens.games.querySelector('.screen-title');
+      if (title) title.textContent = name === 'emulators' ? 'Emuladores · Super Nintendo' : 'Juegos';
     }
-    if (enter) this.#enterScreen(name);
+    if (enter) this.#enterScreen(view);
   }
 
   #enterScreen(name) {
@@ -4244,14 +4714,16 @@ class WebBoxOS {
       this.files.focusEntry();
     } else if (name === 'games') {
       this.games.focusEntry();
-    } else if (name === 'emulators') {
-      this.focus.focusFirst('#screen-emulators [data-zone="main"]');
     } else {
       this.focus.focusFirst('[data-zone="main"]');
     }
   }
 
   async back() {
+    if (this.cardMenu.isOpen) {
+      this.cardMenu.close();
+      return;
+    }
     if (this.dialog.isOpen) {
       this.dialog.close();
       return;
@@ -4280,6 +4752,7 @@ class WebBoxOS {
   }
 
   home() {
+    if (this.cardMenu.isOpen) this.cardMenu.close({ restore: false });
     if (this.dialog.isOpen) this.dialog.close({ restore: false });
     if (this.player.isOpen) this.player.close({ restore: false });
     if (this.files?.viewerOpen) this.files.closeViewer({ restore: false });
@@ -4292,31 +4765,6 @@ class WebBoxOS {
     this.#enterScreen('home');
   }
 
-  #renderEmulators() {
-    this.screens.emulators.innerHTML = `
-      <h1 class="screen-title">Emuladores</h1>
-      <p class="files-sub">Consolas retro listas para ejecutar tus juegos desde WebBox OS.</p>
-      <section class="emulators-catalog">
-        <article class="emulators-console-card">
-          <div class="emulators-console-art">${icon('gamepad')}</div>
-          <div class="emulators-console-info">
-            <div class="emulators-card-topline">
-              <span class="emulators-kicker">CONSOLA DISPONIBLE</span>
-              <span class="emulators-status"><i></i> Lista para jugar</span>
-            </div>
-            <h2>Super Nintendo (SNES)</h2>
-            <p>EmulatorJS · Snes9x · ROMs desde el Gestor de archivos · Mando y teclado.</p>
-            <div class="emulators-card-actions">
-              <div class="btn" role="button" tabindex="-1" data-focusable data-zone="main"
-                   data-fid="emulators:snes" data-act="emulators-snes">${icon('play')}Abrir SNES</div>
-              <span class="emulators-card-note">Formatos: SFC · SMC · FIG · SWC</span>
-            </div>
-          </div>
-        </article>
-        <p class="emulators-help">Tus ROMs no se incluyen en WebBox OS. Guarda tus archivos en el Gestor de archivos y abre SNES para buscarlos y ejecutarlos.</p>
-      </section>`;
-  }
-
   // -------------------------------------------------------------- overlay
 
   openItem(item) {
@@ -4324,6 +4772,10 @@ class WebBoxOS {
     // Aplicaciones reales: abren su propia pantalla en vez de la simulación.
     if (item.screen) {
       if (item.kind === 'app') this.launcher.recordRecent(item.id);
+      if (item.location) {
+        this.#openMediaLocation(item.location).catch((err) =>
+          toast(err?.message || 'No se pudo abrir esa carpeta.', 4500));
+      }
       this.navigate(item.screen, { enter: true });
       return;
     }
@@ -4366,6 +4818,116 @@ class WebBoxOS {
       const ok = this.focus.focusByFid(this.overlayReturnFid);
       if (!ok) this.#enterScreen(this.current);
     }
+  }
+
+  // ------------------------------------------------ menú de tarjetas
+
+  /** Doble pulsación sobre una tarjeta: cambiar la foto del icono o eliminarla. */
+  #openCardMenu(item) {
+    if (this.overlayOpen || this.cardMenu.isOpen || this.dialog.isOpen || this.player.isOpen) return;
+    const actions = [
+      {
+        id: 'icon',
+        label: 'Cambiar foto del icono',
+        icon: 'photo',
+        file: true,
+        onSelect: async (file) => {
+          try {
+            this.launcher.setIcon(item.id, await toIconDataUrl(file));
+            toast(`Icono actualizado: ${item.name}`);
+          } catch (err) {
+            toast(err?.message || 'No se pudo usar esa imagen.', 4200);
+          }
+        },
+      },
+    ];
+    if (this.launcher.hasCustomIcon(item.id)) {
+      actions.push({
+        id: 'reset',
+        label: 'Restaurar icono original',
+        icon: 'reset',
+        onSelect: () => {
+          this.launcher.resetIcon(item.id);
+          toast(`Icono original: ${item.name}`);
+        },
+      });
+    }
+    actions.push({
+      id: 'delete',
+      label: 'Eliminar casilla',
+      icon: 'trash',
+      danger: true,
+      onSelect: () => {
+        this.launcher.hide(item.id);
+        toast(`Eliminado: ${item.name}. Se restaura desde Aplicaciones.`, 3800);
+      },
+    });
+    this.cardMenu.open({
+      title: item.name,
+      subtitle: 'Elige qué hacer con esta casilla.',
+      actions,
+    });
+  }
+
+  // ------------------------------------------ ubicaciones de contenido
+
+  #loadMediaFolders() {
+    const saved = storage.get('mediaFolders', {});
+    const out = {};
+    for (const { key } of MEDIA_LOCATIONS) {
+      const info = saved?.[key];
+      if (info && typeof info.name === 'string') out[key] = { name: info.name, internal: Boolean(info.internal) };
+    }
+    return out;
+  }
+
+  #saveMediaFolder(key, info) {
+    this.mediaFolders[key] = info;
+    storage.set('mediaFolders', this.mediaFolders);
+    this.launcher.render();
+    this.focus.focusByFid(`loc:${key}`, { scroll: false });
+  }
+
+  async #chooseLocation(key) {
+    const label = MEDIA_LOCATIONS.find((l) => l.key === key)?.label ?? key;
+    if (!supportsFileSystemAccess()) {
+      this.#saveMediaFolder(key, { name: 'Almacenamiento interno', internal: true });
+      toast(`${label}: este navegador no permite elegir carpetas del equipo; se usará el almacenamiento interno.`, 4800);
+      return;
+    }
+    try {
+      const handle = await window.showDirectoryPicker({ id: `webbox-${key}`, mode: 'read' });
+      await saveHandle(`media:${key}`, handle);
+      this.#saveMediaFolder(key, { name: handle.name || 'Carpeta', internal: false });
+      toast(`${label}: ${handle.name || 'carpeta'} guardada.`);
+    } catch (err) {
+      if (err?.name === 'AbortError') return;
+      toast(err?.message || 'No se pudo elegir la carpeta.', 4500);
+    }
+  }
+
+  /** Abre en el Gestor de archivos la carpeta elegida para música, fotos o videos. */
+  async #openMediaLocation(key) {
+    const label = MEDIA_LOCATIONS.find((l) => l.key === key)?.label ?? key;
+    const info = this.mediaFolders[key];
+    if (!info) {
+      toast(`Aún no elegiste la carpeta de ${label}. Hazlo en Aplicaciones > Dónde están tus archivos.`, 5000);
+      return;
+    }
+    if (info.internal) {
+      await this.files.openInternal();
+      return;
+    }
+    const handle = await getHandle(`media:${key}`);
+    if (!handle) throw new Error(`No se encontró la carpeta de ${label}. Vuelve a elegirla en Aplicaciones.`);
+    let permission = await handle.queryPermission?.({ mode: 'read' });
+    if (permission !== 'granted' && handle.requestPermission) {
+      permission = await handle.requestPermission({ mode: 'read' });
+    }
+    if (permission && permission !== 'granted') {
+      throw new Error(`El navegador no concedió permiso para la carpeta de ${label}. Vuelve a elegirla en Aplicaciones.`);
+    }
+    await this.files.openLocation({ backend: 'native', handle, name: handle.name || info.name, path: '/', kind: 'directory' });
   }
 
   // ------------------------------------------------------- bibliotecas
@@ -4503,9 +5065,10 @@ class WebBoxOS {
     let imageUrl = '';
     let isTemporaryUrl = false;
 
-    if (selected === 'custom') {
+    const customId = customIdFromValue(selected);
+    if (customId) {
       try {
-        const blob = await getCustomBackground();
+        const blob = await getBackground(customId);
         if (request !== this.backgroundRequest) return;
         if (blob) {
           imageUrl = URL.createObjectURL(blob);
