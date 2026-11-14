@@ -1,0 +1,20 @@
+{
+  "name": "WebBox OS",
+  "short_name": "WebBox",
+  "description": "Launcher estilo Android TV que funciona en el navegador, con soporte de mandos Bluetooth.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#07090f",
+  "theme_color": "#07090f",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "assets/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

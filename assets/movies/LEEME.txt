@@ -1,0 +1,4 @@
+Coloca aquí tus películas (.mp4 o .webm funcionan en casi todos los navegadores)
+y sus pósters (.jpg). Luego agrégalas en WebBox OS > Películas > "+ Agregar" con la
+ruta, por ejemplo:  assets/movies/mi-pelicula.mp4
+o escríbelas en js/data/library.js.

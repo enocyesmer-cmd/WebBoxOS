@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07090f">
+  <meta name="color-scheme" content="dark">
+  <title>WebBox OS</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/svg+xml" href="assets/icons/icon.svg">
+  <link rel="stylesheet" href="css/main.css">
+  <link rel="stylesheet" href="css/launcher.css">
+  <link rel="stylesheet" href="css/navigation.css">
+  <link rel="stylesheet" href="css/settings.css">
+  <link rel="stylesheet" href="css/media.css">
+</head>
+<body data-motion="full">
+  <div id="bg" aria-hidden="true"></div>
+
+  <div id="shell">
+    <!-- Menú lateral -->
+    <nav id="sidebar" aria-label="Navegación principal">
+      <div class="nav-item is-current" role="button" tabindex="-1" data-focusable data-noreveal
+           data-zone="nav" data-fid="nav:home" data-screen="home">
+        <span class="nav-ico" data-icon="home"></span><span class="nav-label">Inicio</span>
+      </div>
+      <div class="nav-item" role="button" tabindex="-1" data-focusable data-noreveal
+           data-zone="nav" data-fid="nav:apps" data-screen="apps">
+        <span class="nav-ico" data-icon="apps"></span><span class="nav-label">Aplicaciones</span>
+      </div>
+      <div class="nav-item" role="button" tabindex="-1" data-focusable data-noreveal
+           data-zone="nav" data-fid="nav:youtube" data-screen="youtube">
+        <span class="nav-ico" data-icon="youtube"></span><span class="nav-label">YouTube</span>
+      </div>
+      <div class="nav-item" role="button" tabindex="-1" data-focusable data-noreveal
+           data-zone="nav" data-fid="nav:movies" data-screen="movies">
+        <span class="nav-ico" data-icon="film"></span><span class="nav-label">Películas</span>
+      </div>
+      <div class="nav-item" role="button" tabindex="-1" data-focusable data-noreveal
+           data-zone="nav" data-fid="nav:settings" data-screen="settings">
+        <span class="nav-ico" data-icon="settings"></span><span class="nav-label">Configuración</span>
+      </div>
+    </nav>
+
+    <div class="stage">
+      <!-- Barra superior -->
+      <header id="topbar">
+        <div class="brand">
+          <span class="brand-logo" data-icon="rocket"></span>
+          <span class="brand-name">WebBox <b>OS</b></span>
+        </div>
+        <div class="topbar-right">
+          <div class="chip" id="input-chip" title="Último dispositivo de entrada usado">
+            <span class="chip-text">Entrada: <b id="last-input">—</b></span>
+          </div>
+          <div class="chip" id="pad-chip">
+            <span class="dot"></span>
+            <span class="chip-icon" data-icon="gamepad"></span>
+            <span class="chip-text" id="pad-label">Sin mando</span>
+          </div>
+          <div class="clock">
+            <div id="clock-time">--:--</div>
+            <div id="clock-date">&nbsp;</div>
+          </div>
+        </div>
+      </header>
+
+      <!-- Pantallas -->
+      <main id="screens">
+        <section id="screen-home" class="screen screen--scroll" aria-label="Inicio"></section>
+        <section id="screen-apps" class="screen screen--scroll" aria-label="Aplicaciones" hidden></section>
+        <section id="screen-youtube" class="screen screen--scroll" aria-label="YouTube" hidden></section>
+        <section id="screen-movies" class="screen screen--scroll" aria-label="Películas" hidden></section>
+        <section id="screen-settings" class="screen" aria-label="Configuración" hidden></section>
+      </main>
+
+      <!-- Ayudas de control -->
+      <footer id="hints">
+        <span class="hint"><kbd>↑ ↓ ← →</kbd> Navegar</span>
+        <span class="hint"><kbd>Enter</kbd> OK</span>
+        <span class="hint"><kbd>Esc</kbd> Atrás</span>
+        <span class="hint"><kbd>H</kbd> Inicio</span>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Aplicación abierta (simulada) -->
+  <div id="overlay" hidden></div>
+  <div id="player" hidden></div>
+  <div id="dialog" hidden></div>
+  <div id="toasts" aria-live="polite"></div>
+
+  <noscript>WebBox OS necesita JavaScript.</noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

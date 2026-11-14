@@ -1,0 +1,484 @@
+/* ==========================================================================
+   WebBox OS — base, estructura general, barra superior, menú lateral,
+   avisos, ayudas y overlay de aplicación.
+   Todas las medidas usan rem: el tamaño raíz escala con la pantalla (16:9)
+   y con el ajuste "Tamaño de la interfaz".
+   ========================================================================== */
+
+:root {
+  --bg: #07090f;
+  --surface: rgba(255, 255, 255, 0.06);
+  --surface-2: rgba(255, 255, 255, 0.11);
+  --text: #f3f6fb;
+  --muted: #9aa6bd;
+  --accent: #6ea8ff;
+  --accent-2: #a78bfa;
+  --ok: #4ade80;
+  --radius: 1.1rem;
+  --rail: 5.5rem;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Ajustables desde Configuración (js/main.js) */
+  --ui-scale: 1;
+  --overscan-x: 0vw;
+  --overscan-y: 0vh;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html {
+  /* 1920x1080 -> 20px. Usa el lado limitante para mantener 16:9. */
+  font-size: calc(var(--ui-scale) * max(8px, min(1.0417vw, 1.852vh)));
+  height: 100%;
+  background: var(--bg);
+  color-scheme: dark;
+}
+
+body {
+  height: 100%;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--bg);
+  font-family: Inter, "Segoe UI", Roboto, "Helvetica Neue", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  display: block;
+}
+
+/* ---------------------------------------------------------------- fondo */
+
+#bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-size: cover;
+  background-position: center;
+  background-color: var(--bg);
+}
+
+#bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(5, 7, 12, 0.78), rgba(5, 7, 12, 0.3) 55%, rgba(5, 7, 12, 0.55)),
+    linear-gradient(0deg, rgba(5, 7, 12, 0.85), transparent 45%);
+}
+
+/* ------------------------------------------------------------ estructura */
+
+#shell {
+  position: fixed;
+  inset: var(--overscan-y) var(--overscan-x);
+  z-index: 1;
+  display: flex;
+}
+
+.stage {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  margin-left: var(--rail);
+  display: flex;
+  flex-direction: column;
+}
+
+#screens {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.screen {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  scrollbar-width: none;
+}
+
+.screen--scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 4rem;
+}
+
+.screen::-webkit-scrollbar,
+.row-track::-webkit-scrollbar,
+.settings-panel::-webkit-scrollbar {
+  display: none;
+}
+
+.screen.is-entering {
+  animation: screen-in 0.38s var(--ease) both;
+}
+
+@keyframes screen-in {
+  from {
+    opacity: 0;
+    transform: translateY(1.2rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.screen-title {
+  font-size: 2.1rem;
+  font-weight: 700;
+  padding: 0.6rem 3rem 0 2rem;
+  letter-spacing: 0.01em;
+}
+
+/* ------------------------------------------------------------ barra superior */
+
+#topbar {
+  flex: none;
+  height: 5.5rem;
+  padding: 0 3rem 0 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.brand-logo .icon {
+  width: 2rem;
+  height: 2rem;
+  color: var(--accent);
+}
+
+.brand-name {
+  font-size: 1.5rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.brand-name b {
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 1.2rem;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  height: 2.6rem;
+  padding: 0 1.1rem;
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 0.95rem;
+  color: var(--muted);
+  max-width: 22rem;
+}
+
+.chip b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.chip-icon .icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.chip-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  flex: none;
+  border-radius: 50%;
+  background: #64748b;
+}
+
+.chip.on {
+  color: var(--text);
+}
+
+.chip.on .dot {
+  background: var(--ok);
+  box-shadow: 0 0 0.7rem var(--ok);
+}
+
+.clock {
+  text-align: right;
+  line-height: 1.2;
+}
+
+#clock-time {
+  font-size: 1.9rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+#clock-date {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+/* Solo la primera letra en mayúscula ("Viernes, 13 de noviembre") */
+#clock-date::first-letter {
+  text-transform: uppercase;
+}
+
+/* ------------------------------------------------------------ menú lateral */
+
+#sidebar {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--rail);
+  padding: 0 0.8rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.6rem;
+  overflow: hidden;
+  transition: width 0.3s var(--ease), background-color 0.3s;
+}
+
+#sidebar.expanded {
+  width: 17rem;
+  background: linear-gradient(90deg, rgba(6, 9, 16, 0.96), rgba(6, 9, 16, 0.9) 78%, transparent);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  height: 3.7rem;
+  padding: 0 1rem;
+  border-radius: 1.2rem;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.nav-ico {
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.nav-ico .icon {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.nav-label {
+  font-size: 1.2rem;
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+#sidebar.expanded .nav-label {
+  opacity: 1;
+}
+
+.nav-item.is-current {
+  color: var(--text);
+  background: var(--surface);
+}
+
+/* ------------------------------------------------------------ ayudas */
+
+#hints {
+  flex: none;
+  height: 3.2rem;
+  padding: 0 3rem 0 2rem;
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+kbd {
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  padding: 0.15rem 0.6rem;
+  margin-right: 0.45rem;
+  border-radius: 0.5rem;
+  background: var(--surface-2);
+}
+
+/* ------------------------------------------------------------ avisos */
+
+#toasts {
+  position: fixed;
+  z-index: 100;
+  left: 50%;
+  bottom: 4.5rem;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  pointer-events: none;
+}
+
+.toast {
+  padding: 0.85rem 1.6rem;
+  border-radius: 999px;
+  background: rgba(18, 24, 38, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.5);
+  font-size: 1.05rem;
+  animation: toast-in 0.3s var(--ease) both;
+}
+
+.toast.out {
+  animation: toast-out 0.3s ease both;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(1rem) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateY(0.6rem);
+  }
+}
+
+/* ------------------------------------------------------------ overlay de app */
+
+#overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  /* Respaldo para navegadores sin color-mix (algunos Smart TV antiguos) */
+  background: linear-gradient(160deg, var(--c1), var(--c2));
+  background:
+    radial-gradient(120% 120% at 50% 0%, var(--c1), transparent 70%),
+    linear-gradient(160deg, color-mix(in srgb, var(--c1) 55%, #05070c), color-mix(in srgb, var(--c2) 45%, #05070c));
+}
+
+#overlay.is-entering {
+  animation: overlay-in 0.35s var(--ease) both;
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.overlay-card {
+  max-width: 44rem;
+  padding: 2rem;
+}
+
+.overlay-icon .icon {
+  width: 9rem;
+  height: 9rem;
+  margin: 0 auto 1.5rem;
+  stroke-width: 1.2;
+}
+
+.overlay-card h1 {
+  font-size: 3.4rem;
+  font-weight: 700;
+}
+
+.overlay-sub {
+  margin-top: 0.4rem;
+  font-size: 1.3rem;
+  opacity: 0.85;
+}
+
+.overlay-note {
+  margin: 1.6rem auto 2.4rem;
+  font-size: 1.1rem;
+  line-height: 1.5;
+  opacity: 0.75;
+}
+
+.overlay-actions {
+  display: flex;
+  justify-content: center;
+  gap: 1.4rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.95rem 2rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 1.2rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn .icon {
+  width: 1.4rem;
+  height: 1.4rem;
+}
+
+/* ------------------------------------------------------------ pantallas pequeñas */
+
+@media (max-aspect-ratio: 1/1) {
+  /* Vertical (móvil): se reduce lo accesorio; la interfaz está pensada para TV. */
+  .chip:not(#pad-chip) {
+    display: none;
+  }
+  .clock #clock-date {
+    display: none;
+  }
+}

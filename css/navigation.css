@@ -1,0 +1,99 @@
+/* ==========================================================================
+   Navegación: indicador de foco, animaciones de selección y "rebote".
+   El foco lo gestiona js/core/focus.js con la clase `.is-focused`
+   (no depende de :focus, así el mouse y el mando se ven igual).
+   ========================================================================== */
+
+[data-focusable] {
+  outline: none;
+  transition:
+    transform 0.22s var(--ease),
+    box-shadow 0.22s var(--ease),
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.card {
+  will-change: transform;
+}
+
+/* Tarjetas: crecen, se iluminan y se destacan sobre las demás */
+.card.is-focused {
+  transform: scale(1.09);
+  z-index: 5;
+  box-shadow:
+    0 0 0 0.22rem #fff,
+    0 0 2.6rem 0.35rem rgba(110, 168, 255, 0.55),
+    0 1.6rem 3rem rgba(0, 0, 0, 0.55);
+}
+
+/* Menú lateral */
+.nav-item.is-focused {
+  background: #fff;
+  color: #0b1020;
+  transform: scale(1.03);
+  box-shadow: 0 0 1.8rem rgba(255, 255, 255, 0.3);
+}
+
+/* Botones y controles */
+.btn.is-focused {
+  background: #fff;
+  color: #0b1020;
+  transform: scale(1.07);
+  box-shadow: 0 0 2rem rgba(255, 255, 255, 0.35);
+}
+
+/* `.tab.active` (settings.css) se carga después: la versión doble gana al foco */
+.tab.is-focused,
+.tab.active.is-focused {
+  background: #fff;
+  color: #0b1020;
+  transform: translateX(0.3rem);
+  box-shadow: 0 0 1.6rem rgba(255, 255, 255, 0.25);
+}
+
+.setting.is-focused {
+  background: rgba(255, 255, 255, 0.15);
+  box-shadow: inset 0 0 0 0.16rem #fff, 0 0 1.6rem rgba(110, 168, 255, 0.3);
+  transform: scale(1.01);
+}
+
+.step.is-focused {
+  background: #fff;
+  color: #0b1020;
+  transform: scale(1.15);
+  box-shadow: 0 0 1.4rem rgba(255, 255, 255, 0.4);
+}
+
+.bg-tile.is-focused {
+  transform: scale(1.06);
+  box-shadow: 0 0 0 0.2rem #fff, 0 0 2rem rgba(110, 168, 255, 0.5);
+  z-index: 3;
+}
+
+/* "Rebote" cuando no hay nada más en esa dirección.
+   Usa la propiedad `translate`, que se suma al `transform` del foco. */
+.bump-left { animation: bump-x-left 0.2s ease; }
+.bump-right { animation: bump-x-right 0.2s ease; }
+.bump-up { animation: bump-y-up 0.2s ease; }
+.bump-down { animation: bump-y-down 0.2s ease; }
+
+@keyframes bump-x-left { 50% { translate: -0.5rem 0; } }
+@keyframes bump-x-right { 50% { translate: 0.5rem 0; } }
+@keyframes bump-y-up { 50% { translate: 0 -0.4rem; } }
+@keyframes bump-y-down { 50% { translate: 0 0.4rem; } }
+
+/* El cursor se oculta al usar teclado/mando */
+body.cursor-hidden,
+body.cursor-hidden * {
+  cursor: none !important;
+}
+
+/* Animaciones reducidas (Configuración > Pantalla) */
+body[data-motion="reduced"] *,
+body[data-motion="reduced"] *::before,
+body[data-motion="reduced"] *::after {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-delay: 0s !important;
+}

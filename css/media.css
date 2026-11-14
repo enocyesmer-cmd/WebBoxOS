@@ -1,0 +1,304 @@
+/* ==========================================================================
+   YouTube / Películas: biblioteca, reproductor y formulario de agregar.
+   ========================================================================== */
+
+.lib-sub {
+  padding: 0.3rem 3rem 0 2rem;
+  max-width: 62rem;
+  font-size: 1.05rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.lib-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 1.4rem 3rem 0.4rem 2rem;
+}
+
+.lib-actions .btn {
+  padding: 0.75rem 1.6rem;
+  font-size: 1.1rem;
+}
+
+.lib-empty {
+  margin: 2rem 3rem 2rem 2rem;
+  max-width: 56rem;
+  padding: 2rem 2.4rem;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 0.12rem dashed rgba(255, 255, 255, 0.22);
+  font-size: 1.15rem;
+  line-height: 1.65;
+  color: #cdd6ea;
+}
+
+.lib-empty b {
+  color: var(--text);
+}
+
+.card--poster {
+  width: 12.6rem;
+  height: 18.2rem;
+}
+
+.card--poster .card-art .icon {
+  width: 2.6rem;
+  height: 2.6rem;
+}
+
+.card-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Con imagen: se oculta el icono y el degradado oscuro queda sobre la foto */
+.card--media .card-art {
+  display: none;
+}
+
+.card--media::before {
+  z-index: 1;
+}
+
+.card--media .card-label,
+.card--media .card-sub {
+  z-index: 2;
+}
+
+.card-label {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------ reproductor */
+
+#player {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #000;
+}
+
+.player-stage {
+  position: absolute;
+  inset: 0;
+  background: #000;
+}
+
+.player-stage iframe,
+#player video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+}
+
+/* El iframe no recibe clics ni teclas: el foco se queda en WebBox OS */
+.player-stage iframe {
+  pointer-events: none;
+}
+
+.player-msg {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  padding: 3rem 12rem;
+  text-align: center;
+  font-size: 1.4rem;
+  line-height: 1.5;
+  color: #cdd6ea;
+  pointer-events: none;
+}
+
+.player-top,
+.player-controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  transition: opacity 0.3s ease;
+}
+
+.player-top {
+  top: 0;
+  padding: 1.8rem 3rem 3.5rem;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.8), transparent);
+}
+
+.player-title {
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
+.player-controls {
+  bottom: 0;
+  padding: 4.5rem 3rem 2rem;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.88), transparent);
+}
+
+#player.is-idle .player-top,
+#player.is-idle .player-controls {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.player-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.2rem;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  color: #cdd6ea;
+}
+
+.player-track {
+  flex: 1;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  overflow: hidden;
+}
+
+.player-track i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+}
+
+.player-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+}
+
+.btn--sm {
+  padding: 0.65rem 1.3rem;
+  gap: 0.55rem;
+  font-size: 1rem;
+}
+
+.btn--sm .icon {
+  width: 1.3rem;
+  height: 1.3rem;
+}
+
+.btn--sm [data-ico] {
+  display: grid;
+}
+
+/* ------------------------------------------------------------ formulario */
+
+#dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  background: rgba(3, 5, 10, 0.78);
+}
+
+.dialog-card {
+  width: min(46rem, 90vw);
+  max-height: 92vh;
+  overflow-y: auto;
+  padding: 2rem 2.2rem;
+  border-radius: 1.4rem;
+  background: #111827;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2rem 5rem rgba(0, 0, 0, 0.6);
+  scrollbar-width: none;
+}
+
+.dialog-card h2 {
+  font-size: 1.7rem;
+  font-weight: 700;
+}
+
+.dialog-hint {
+  margin: 0.5rem 0 1rem;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.field {
+  margin-top: 0.9rem;
+  padding: 0.7rem 1.1rem 0.8rem;
+  border-radius: 0.9rem;
+  background: var(--surface);
+  border: 0.12rem solid transparent;
+  cursor: text;
+}
+
+.field label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.field input {
+  width: 100%;
+  margin-top: 0.15rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 1.15rem;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.field input::placeholder {
+  color: #5b667d;
+}
+
+.field.is-focused {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: #fff;
+  box-shadow: 0 0 1.4rem rgba(110, 168, 255, 0.3);
+}
+
+.dialog-error {
+  margin-top: 0.9rem;
+  font-size: 1rem;
+  color: #fca5a5;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1.6rem;
+}
+
+/* "Guardar" ancho y "Cancelar" estrecho: al bajar desde un campo, el foco cae en Guardar */
+.dialog-actions .btn {
+  justify-content: center;
+}
+
+.dialog-actions .btn:first-child {
+  flex: 2;
+}
+
+.dialog-actions .btn:last-child {
+  flex: 1;
+}
+
+/* Los avisos suben arriba mientras se reproduce, para no tapar los controles */
+body.player-open #toasts {
+  bottom: auto;
+  top: 2rem;
+}
