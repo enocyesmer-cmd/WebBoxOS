@@ -104,9 +104,19 @@ GIF, AVIF o BMP, hasta 20 MB, máximo 30). Cada una se guarda como Blob en Index
 como **Mi fondo 1, 2…** junto a los fondos incluidos. **Pulsa dos veces** un fondo propio para
 eliminarlo.
 
+## Música (YouTube)
+
+La pantalla **Música** (menú lateral y casilla de Aplicaciones) usa el mismo método que YouTube:
+**Agregar**, pegar el enlace de una canción o lista de YouTube y listo; el título y el artista se
+completan solos (si hay conexión). Se muestran como un carrusel de portadas con una barra de
+reproducción de cristal (anterior, pausa/play, siguiente, canción actual con progreso, sonido y
+eliminar). ←/→ cambian de portada, OK reproduce, ↓ baja a la barra, ↑ sube a Agregar. La música
+sigue sonando al cambiar de pantalla y se pausa al abrir un video. Necesita Internet, y algunos
+videos no permiten reproducirse fuera de YouTube (se avisa con un mensaje).
+
 ## Aplicaciones: ubicaciones, iconos y eliminar casillas
 
-- **Dónde están tus archivos** (pantalla Aplicaciones): elige la carpeta de tu **Música**, **Fotos**
+- **Dónde están tus archivos** (pantalla Aplicaciones): elige la carpeta de tus **Fotos**
   y **Videos** (selector de carpetas en Chrome/Edge; en otros navegadores se usa el almacenamiento
   interno). Al abrir esas aplicaciones, el Gestor de archivos entra directo en esa carpeta.
   El navegador solo comparte el nombre de la carpeta, no la ruta completa.
@@ -131,6 +141,7 @@ eliminarlo.
     js/input/             keyboard · gamepad
     js/launcher.js        filas y tarjetas
     js/library.js         bibliotecas YouTube / Películas
+    js/music.js           pantalla de Música (carrusel + reproductor de YouTube)
     js/settings.js        configuración, fondos personalizados y prueba de botones
     js/backgroundStore.js almacenamiento de varios fondos propios en IndexedDB
     js/cardMenu.js        menú de doble pulsación (icono / eliminar)

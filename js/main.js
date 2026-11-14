@@ -16,6 +16,7 @@ import { Player } from './player.js';
 import { Dialog } from './dialog.js';
 import { FilesScreen } from './files.js';
 import { GamesScreen } from './games.js';
+import { MusicScreen } from './music.js';
 import { getHandle, saveHandle, removeHandle, getStoredFile, supportsFileSystemAccess } from './fileSystem.js';
 import { YOUTUBE_DEFAULTS, MOVIES_DEFAULTS } from './data/library.js';
 import { parseMediaUrl } from './core/media.js';
@@ -42,6 +43,7 @@ class WebBoxOS {
       apps: $('#screen-apps'),
       youtube: $('#screen-youtube'),
       movies: $('#screen-movies'),
+      music: $('#screen-music'),
       files: $('#screen-files'),
       games: $('#screen-games'),
       settings: $('#screen-settings'),
@@ -116,9 +118,34 @@ class WebBoxOS {
       root: this.screens.files,
       focus: this.focus,
       dialog: this.dialog,
-      onOpenMedia: (file) => this.player.openFile(file),
+      onOpenMedia: (file) => {
+        this.music.pause();
+        this.player.openFile(file);
+      },
       onAddMovie: (entry, name) => this.#addMovieFromFiles(entry, name),
     });
+    // Música: misma biblioteca de enlaces de YouTube, mostrada como carrusel de portadas.
+    this.musicLib = new LibraryScreen({
+      ...common,
+      id: 'music',
+      root: document.createElement('div'), // solo almacena datos; la vista es MusicScreen
+      defaults: [],
+      title: 'Música',
+      subtitle: '',
+      defaultCategory: 'Mi música',
+      cardStyle: 'wide',
+      cardIcon: 'music',
+      accept: ['youtube'],
+      emptyText: '',
+    });
+    this.music = new MusicScreen({
+      root: this.screens.music,
+      focus: this.focus,
+      lib: this.musicLib,
+      onAdd: () => this.#openAddDialog(this.musicLib),
+      onDelete: (item) => this.#confirmDeleteSong(item),
+    });
+    this.musicLib.onChange = () => this.music.render();
     this.games = new GamesScreen({
       root: this.screens.games,
       focus: this.focus,
@@ -138,6 +165,7 @@ class WebBoxOS {
     this.launcher.render();
     for (const lib of Object.values(this.libraries)) lib.render();
     this.files.render();
+    this.music.render();
     this.games.render();
     this.settings.render();
     this.#applyDisplay();
@@ -225,6 +253,10 @@ class WebBoxOS {
     if (this.player.handleAction(action)) return;
     // Mientras se juega, el propio emulador recibe las entradas del mando.
     if (this.games?.isPlaying) return;
+    if (
+      this.current === 'music' && !this.dialog.isOpen && !this.cardMenu.isOpen &&
+      !this.player.isOpen && !this.overlayOpen && this.music.handleAction(action)
+    ) return;
 
     switch (action) {
       case 'up':
@@ -285,6 +317,8 @@ class WebBoxOS {
       this.files.focusEntry();
     } else if (name === 'games') {
       this.games.focusEntry();
+    } else if (name === 'music') {
+      this.music.focusEntry();
     } else {
       this.focus.focusFirst('[data-zone="main"]');
     }
@@ -505,17 +539,26 @@ class WebBoxOS {
 
   #openAddDialog(lib) {
     const isMovies = lib.id === 'movies';
+    const isMusic = lib.id === 'music';
     this.dialog.open({
-      title: isMovies ? 'Agregar película' : 'Agregar a YouTube',
+      title: isMovies ? 'Agregar película' : isMusic ? 'Agregar música' : 'Agregar a YouTube',
       hint: isMovies
         ? 'Enlace de YouTube o ruta de un archivo (assets/movies/mi-pelicula.mp4). Pulsa OK en un campo para escribir.'
-        : 'Pega un enlace de video o lista de YouTube. Si dejas el título vacío se intenta obtener solo.',
-      fields: [
-        { key: 'url', label: 'Enlace o ruta', placeholder: isMovies ? 'https://… o assets/movies/…mp4' : 'https://www.youtube.com/watch?v=…' },
-        { key: 'title', label: isMovies ? 'Título' : 'Título (opcional)', placeholder: isMovies ? 'Nombre de la película' : 'Se completa solo' },
-        { key: 'category', label: 'Categoría (fila donde aparece)', value: '', placeholder: lib.defaultCategory },
-        ...(isMovies ? [{ key: 'image', label: 'Póster (opcional)', placeholder: 'assets/movies/mi-pelicula.jpg' }] : []),
-      ],
+        : isMusic
+          ? 'Pega el enlace de YouTube de la canción (o de una lista). Si dejas el título o el artista vacíos se intentan obtener solos.'
+          : 'Pega un enlace de video o lista de YouTube. Si dejas el título vacío se intenta obtener solo.',
+      fields: isMusic
+        ? [
+            { key: 'url', label: 'Enlace de YouTube', placeholder: 'https://www.youtube.com/watch?v=…' },
+            { key: 'title', label: 'Título de la canción (opcional)', placeholder: 'Se completa solo' },
+            { key: 'artist', label: 'Artista (opcional)', placeholder: 'Se completa solo' },
+          ]
+        : [
+            { key: 'url', label: 'Enlace o ruta', placeholder: isMovies ? 'https://… o assets/movies/…mp4' : 'https://www.youtube.com/watch?v=…' },
+            { key: 'title', label: isMovies ? 'Título' : 'Título (opcional)', placeholder: isMovies ? 'Nombre de la película' : 'Se completa solo' },
+            { key: 'category', label: 'Categoría (fila donde aparece)', value: '', placeholder: lib.defaultCategory },
+            ...(isMovies ? [{ key: 'image', label: 'Póster (opcional)', placeholder: 'assets/movies/mi-pelicula.jpg' }] : []),
+          ],
       onSubmit: (values) => this.#submitItem(lib, values),
     });
   }
@@ -523,11 +566,17 @@ class WebBoxOS {
   async #submitItem(lib, values) {
     const media = parseMediaUrl(values.url);
     if (!media) return 'Enlace no válido. Usa un enlace de YouTube o un archivo .mp4 / .webm.';
+    const isMusic = lib.id === 'music';
     let title = values.title;
-    if (!title && media.type === 'youtube' && media.videoId) title = await fetchYouTubeTitle(values.url);
+    let artist = values.artist || '';
+    if ((!title || (isMusic && !artist)) && media.type === 'youtube' && media.videoId) {
+      const info = await fetchYouTubeInfo(values.url);
+      title = title || info.title;
+      if (isMusic) artist = artist || info.author.replace(/\s*-\s*Topic$/i, '');
+    }
     if (!title) return 'Escribe un título para este elemento.';
 
-    const result = lib.add({ ...values, title });
+    const result = lib.add({ ...values, title, artist });
     if (typeof result === 'string') return result;
     toast(`Agregado: ${result.title}`);
     // El foco vuelve a la tarjeta nueva cuando el formulario se cierre.
@@ -535,7 +584,27 @@ class WebBoxOS {
     return null;
   }
 
+  #confirmDeleteSong(item) {
+    this.cardMenu.open({
+      title: item.title,
+      subtitle: '¿Quitar esta canción de tu música?',
+      actions: [
+        {
+          id: 'delete-song',
+          label: 'Eliminar canción',
+          icon: 'trash',
+          danger: true,
+          onSelect: () => {
+            this.musicLib.remove(item.id);
+            toast(`Eliminada: ${item.title}`);
+          },
+        },
+      ],
+    });
+  }
+
   async #playLibraryItem(item, lib) {
+    this.music.pause();
     const onDelete = (it) => this.#deleteItem(lib, it);
     if (!item.fileHandleKey) {
       this.player.open(item, { onDelete });
@@ -687,8 +756,8 @@ class WebBoxOS {
   }
 }
 
-/** Título de un video de YouTube (oEmbed). Devuelve '' si no hay conexión o falla. */
-async function fetchYouTubeTitle(url) {
+/** Título y canal de un video de YouTube (oEmbed). Devuelve textos vacíos si no hay conexión o falla. */
+async function fetchYouTubeInfo(url) {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 5000);
@@ -696,11 +765,14 @@ async function fetchYouTubeTitle(url) {
       signal: ctrl.signal,
     });
     clearTimeout(timer);
-    if (!res.ok) return '';
+    if (!res.ok) return { title: '', author: '' };
     const data = await res.json();
-    return typeof data.title === 'string' ? data.title : '';
+    return {
+      title: typeof data.title === 'string' ? data.title : '',
+      author: typeof data.author_name === 'string' ? data.author_name : '',
+    };
   } catch {
-    return '';
+    return { title: '', author: '' };
   }
 }
 

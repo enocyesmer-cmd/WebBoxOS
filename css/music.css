@@ -1,0 +1,326 @@
+/* ==========================================================================
+   Música: carrusel de portadas + barra de reproducción de cristal.
+   ========================================================================== */
+
+#screen-music {
+  overflow: hidden;
+}
+
+.music {
+  --mc: clamp(10rem, 36vh, 17rem);
+  position: relative;
+  isolation: isolate;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Fondo borroso con los colores de la portada seleccionada */
+.music-bg {
+  position: absolute;
+  inset: -12%;
+  z-index: -1;
+  background-color: var(--c2, #b45309);
+  background-image: linear-gradient(135deg, var(--c1, #7c2d12), var(--c2, #f59e0b));
+  background-size: cover;
+  background-position: center;
+  filter: blur(70px) saturate(1.5) brightness(0.8);
+  opacity: 0.6;
+  transition: background-image 0.5s ease, opacity 0.5s ease;
+}
+
+.music-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-right: 3rem;
+}
+
+.music-head .btn {
+  margin-top: 0.4rem;
+  flex: none;
+}
+
+.music-empty {
+  margin: 2rem 3rem 0 2rem;
+}
+
+/* Carrusel */
+.music-stage {
+  position: relative;
+  flex: 1;
+  min-height: calc(var(--mc) * 1.45);
+  perspective: 90rem;
+}
+
+.mcard {
+  position: absolute;
+  left: 50%;
+  top: 1.2rem;
+  width: var(--mc);
+  margin-left: calc(var(--mc) / -2);
+  border-radius: 1.5rem;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.1));
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 1.2rem 3rem rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  overflow: hidden;
+  cursor: pointer;
+  transform:
+    translateX(calc(var(--d) * var(--mc) * 0.64))
+    scale(calc(1 - var(--ad) * 0.1))
+    rotateY(calc(var(--d) * -7deg));
+  z-index: calc(10 - var(--ad));
+  filter: brightness(calc(1 - var(--ad) * 0.22));
+  transition: transform 0.45s cubic-bezier(0.22, 0.8, 0.3, 1), filter 0.45s ease;
+}
+
+.mcard.is-far {
+  display: none;
+}
+
+.mcard.is-focused {
+  filter: none;
+  border-color: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 1.6rem 3.6rem rgba(0, 0, 0, 0.5), 0 0 2.2rem rgba(255, 255, 255, 0.22);
+}
+
+.mcard-art {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--c1), var(--c2));
+}
+
+.mcard-art img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Las miniaturas de YouTube traen franjas negras: se amplía para recortarlas */
+  transform: scale(1.34);
+}
+
+.mcard-ico {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.mcard-ico .icon {
+  width: 38%;
+  height: 38%;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.mcard-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.8rem 0.9rem 1rem;
+  text-align: center;
+}
+
+.mcard-info b {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.mcard-info small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1.05rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* Ecualizador sobre la portada que está sonando */
+.mcard-eq {
+  position: absolute;
+  right: 0.8rem;
+  bottom: 0.8rem;
+  display: none;
+  align-items: flex-end;
+  gap: 0.18rem;
+  height: 1.3rem;
+  padding: 0.3rem 0.45rem;
+  border-radius: 0.6rem;
+  background: rgba(0, 0, 0, 0.55);
+  box-sizing: content-box;
+}
+
+.mcard.is-playing .mcard-eq {
+  display: flex;
+}
+
+.mcard-eq i {
+  width: 0.22rem;
+  height: 100%;
+  background: #fff;
+  border-radius: 1px;
+  transform-origin: bottom;
+  animation: mcard-eq 0.9s ease-in-out infinite;
+}
+
+.mcard-eq i:nth-child(2) { animation-delay: -0.3s; }
+.mcard-eq i:nth-child(3) { animation-delay: -0.6s; }
+
+@keyframes mcard-eq {
+  0%, 100% { transform: scaleY(0.25); }
+  50% { transform: scaleY(1); }
+}
+
+body[data-motion="reduced"] .mcard-eq i {
+  animation: none;
+}
+
+/* Barra de reproducción */
+.music-bar {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  margin: 0.5rem 3rem 1.6rem 2rem;
+  padding: 0.7rem 1.4rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 0.8rem 2.4rem rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.mbtn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 3.4rem;
+  height: 3.4rem;
+  border-radius: 50%;
+  border: 0.12rem solid transparent;
+  cursor: pointer;
+}
+
+.mbtn .icon {
+  width: 1.7rem;
+  height: 1.7rem;
+  fill: currentColor;
+  stroke-width: 1.4;
+}
+
+.mbtn[aria-disabled="true"] {
+  opacity: 0.4;
+}
+
+.mbtn.is-focused {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: #fff;
+}
+
+[data-btn="mute"] {
+  margin-left: auto;
+}
+
+/* Canción actual dentro de la barra */
+.mnow {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  max-width: 26rem;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-left: auto;
+  padding: 0.5rem 0.9rem 0.7rem 0.5rem;
+  border-radius: 0.9rem;
+  background: rgba(0, 0, 0, 0.62);
+  overflow: hidden;
+}
+
+.mnow-art {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.mnow-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.34);
+}
+
+.mnow-art .icon {
+  width: 1.4rem;
+  height: 1.4rem;
+}
+
+.mnow-text {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.mnow-text b,
+.mnow-text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnow-text b {
+  font-size: 1rem;
+}
+
+.mnow-text small {
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.mnow-time {
+  flex: none;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.mnow-progress {
+  position: absolute;
+  left: 0.5rem;
+  right: 0.5rem;
+  bottom: 0.3rem;
+  height: 0.18rem;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.mnow-progress i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #fff;
+}
+
+@media (max-aspect-ratio: 1/1) {
+  .music-bar { gap: 0.4rem; padding: 0.6rem 0.8rem; margin: 0.5rem 1rem 1rem; }
+  .mnow-time { display: none; }
+  .music-head { padding-right: 1rem; flex-direction: column; }
+}

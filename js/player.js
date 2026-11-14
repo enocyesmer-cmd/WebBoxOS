@@ -19,7 +19,7 @@ const YT_ERRORS = {
 };
 
 let ytPromise = null;
-function loadYouTubeApi() {
+export function loadYouTubeApi() {
   if (window.YT?.Player) return Promise.resolve();
   if (ytPromise) return ytPromise;
   ytPromise = new Promise((resolve, reject) => {

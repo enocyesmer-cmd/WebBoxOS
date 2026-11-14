@@ -73,7 +73,7 @@ export class LibraryScreen {
   }
 
   /** Devuelve el elemento creado, o un string con el error. */
-  add({ title, url, category, image }) {
+  add({ title, url, category, image, artist }) {
     const media = parseMediaUrl(url);
     if (!media) return 'Enlace no válido. Usa un enlace de YouTube o un archivo .mp4 / .webm.';
     if (!this.accept.includes(media.type)) {
@@ -87,6 +87,7 @@ export class LibraryScreen {
       url: String(url).trim(),
       category: String(category || '').trim().slice(0, 40),
       image: String(image || '').trim(),
+      artist: String(artist || '').trim().slice(0, 80),
     };
     this.userItems.push(item);
     this.#save();
@@ -163,6 +164,7 @@ export class LibraryScreen {
       <div class="lib-actions">${actions}</div>
       ${items.length ? rows : `<div class="lib-empty">${this.emptyText}</div>`}
     `;
+    this.onChange?.();
   }
 
   #card(item) {
