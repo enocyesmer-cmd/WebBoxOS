@@ -15,6 +15,8 @@ import { BACKGROUNDS } from './data/apps.js';
 import { listBackgrounds, addBackground, deleteBackground, customValue } from './backgroundStore.js';
 import { DOUBLE_PRESS_MS } from './launcher.js';
 import { api } from './api.js';
+import { roleLabel } from './accounts.js';
+import { FONTS, FONT_GROUPS, fontById, loadFonts } from './data/fonts.js';
 import { esc, toast } from './ui.js';
 
 const TABS = [
@@ -24,6 +26,9 @@ const TABS = [
   { id: 'navigation', label: 'Navegación', icon: 'compass' },
   { id: 'background', label: 'Fondo', icon: 'photo' },
   { id: 'display', label: 'Pantalla', icon: 'sun' },
+  { id: 'fonts', label: 'Fuente', icon: 'book' },
+  { id: 'account', label: 'Cuenta', icon: 'star', when: () => api.online },
+  { id: 'users', label: 'Usuarios', icon: 'gamepad', when: () => api.isAdmin },
   { id: 'server', label: 'Servidor', icon: 'globe' },
 ];
 
@@ -64,12 +69,15 @@ export class SettingsScreen {
    * @param {{root:HTMLElement, focus:import('./core/focus.js').FocusManager,
    *          gamepad:import('./input/gamepad.js').GamepadManager}} opts
    */
-  constructor({ root, focus, gamepad, onBackgroundMenu, server }) {
+  constructor({ root, focus, gamepad, onBackgroundMenu, server, accounts }) {
     this.root = root;
     this.focus = focus;
     this.gamepad = gamepad;
     this.onBackgroundMenu = onBackgroundMenu;
-    this.server = server; // { onSetKey, onRetry, onUpload }
+    this.server = server; // { onRetry, onUpload }
+    this.accounts = accounts; // js/accounts.js
+    this.users = null; // lista cargada (pestaña Usuarios)
+    this.usersError = '';
     this.pendingBg = null;
     this.active = 'device';
     this.capturing = null; // acción que se está remapeando
@@ -162,7 +170,7 @@ export class SettingsScreen {
   // ------------------------------------------------------------- pestañas
 
   #renderTabs() {
-    this.tabsEl.innerHTML = TABS.map(
+    this.tabsEl.innerHTML = TABS.filter((t) => !t.when || t.when()).map(
       (t) => `
       <div class="tab${t.id === this.active ? ' active' : ''}" role="button" tabindex="-1"
            data-focusable data-zone="settings-tabs" data-fid="tab:${t.id}" data-tab="${t.id}">
@@ -180,6 +188,27 @@ export class SettingsScreen {
     this.#renderPanel();
   }
 
+  /** Tras iniciar/cerrar sesión: recalcula qué pestañas existen y redibuja. */
+  refreshTabs() {
+    const visible = TABS.filter((t) => !t.when || t.when()).map((t) => t.id);
+    if (!visible.includes(this.active)) this.active = 'device';
+    this.users = null;
+    this.#renderTabs();
+    this.#renderPanel();
+  }
+
+  /** Lista de usuarios (pestaña Usuarios), cargada del servidor. */
+  async loadUsers() {
+    this.usersError = '';
+    const r = await api.listUsers();
+    if (r.ok) this.users = r.users;
+    else {
+      this.users = [];
+      this.usersError = r.error;
+    }
+    if (this.active === 'users') this.rerender(true);
+  }
+
   #renderPanel() {
     this.live.clear();
     const render = {
@@ -189,6 +218,9 @@ export class SettingsScreen {
       navigation: () => this.#navigationHTML(),
       background: () => this.#backgroundHTML(),
       display: () => this.#displayHTML(),
+      fonts: () => this.#fontsHTML(),
+      account: () => this.#accountHTML(),
+      users: () => this.#usersHTML(),
       server: () => this.#serverHTML(),
     }[this.active];
     this.panelEl.innerHTML = render();
@@ -196,6 +228,8 @@ export class SettingsScreen {
     if (this.active === 'test') this.#cacheLive();
     this.panelEl.scrollTop = 0;
     if (this.active === 'background') this.#loadCustomBackgroundPreview();
+    if (this.active === 'fonts') loadFonts(FONTS); // para ver cada fuente en su propio estilo
+    if (this.active === 'users' && this.users === null) this.loadUsers();
   }
 
   // ----------------------------------------------------------- bloques UI
@@ -548,6 +582,88 @@ export class SettingsScreen {
         'Vuelve a los valores de fábrica (no borra los recientes)', 'reset')}`;
   }
 
+  // ---------------------------------------------------------------- Fuente
+
+  #fontsHTML() {
+    const current = config.get('font');
+    const titleCurrent = config.get('titleFont');
+    const tile = (f, kind, selected) => `
+      <div class="font-tile${selected ? ' selected' : ''}" role="button" tabindex="-1" data-focusable
+           data-zone="settings-panel" data-fid="font:${kind}:${f.id}" data-act="font" data-kind="${kind}" data-id="${f.id}"
+           aria-label="${esc(f.name)}" style="--tile-font:${f.stack.replace(/"/g, "'")}">
+        <span class="font-sample">Aa</span>
+        <span class="font-name">${esc(f.name)}</span>
+        <span class="font-text">Películas, música y más</span>
+        ${selected ? `<span class="tick">${icon('check')}</span>` : ''}
+      </div>`;
+    const groups = (kind, selectedId) =>
+      FONT_GROUPS.map((g) => {
+        const list = FONTS.filter((f) => f.group === g.id);
+        return `
+          <h3 class="font-group">${esc(g.label)}</h3>
+          <div class="font-grid">${list.map((f) => tile(f, kind, f.id === selectedId)).join('')}</div>`;
+      }).join('');
+    const sameTitle = titleCurrent === 'same';
+    return `
+      <h2 class="panel-title">Fuente del texto</h2>
+      <p class="panel-note">Se aplica a todo WebBox OS. Las fuentes de letra de carta se descargan al elegirlas (necesitan Internet la primera vez); sin conexión se usa una parecida del sistema. Para leer cómodo desde el sofá, combina una letra de carta en los títulos con una fuente clara para el resto.</p>
+      ${groups('text', current)}
+      <h2 class="panel-title" style="margin-top:1.6rem">Fuente de los títulos</h2>
+      <div class="font-grid">
+        <div class="font-tile${sameTitle ? ' selected' : ''}" role="button" tabindex="-1" data-focusable
+             data-zone="settings-panel" data-fid="font:title:same" data-act="font" data-kind="title" data-id="same">
+          <span class="font-sample">=</span><span class="font-name">La misma del texto</span>
+          <span class="font-text">Títulos como el resto</span>
+          ${sameTitle ? `<span class="tick">${icon('check')}</span>` : ''}
+        </div>
+      </div>
+      ${groups('title', titleCurrent)}
+      ${this.#action('font-reset', 'font:reset', 'Restablecer fuentes', 'Vuelve a la fuente predeterminada', 'reset')}`;
+  }
+
+  // ---------------------------------------------------------------- Cuenta
+
+  #accountHTML() {
+    const user = api.user;
+    const rows = [
+      ['Servidor', api.online ? 'Conectado' : 'Sin conexión'],
+      ['Sesión', user ? `${user.username} · ${roleLabel(user.role)}` : 'Sin iniciar'],
+      ['Permisos', user ? (user.role === 'admin' ? 'Agrega y elimina contenido, gestiona usuarios' : 'Ve y reproduce el contenido') : '—'],
+    ];
+    if (!api.online) {
+      return '<h2 class="panel-title">Cuenta</h2><p class="panel-note">No hay conexión con el servidor. Abre WebBox OS desde el servidor (npm start) para usar cuentas.</p>';
+    }
+    return `
+      <h2 class="panel-title">Cuenta</h2>
+      <dl class="info-list" style="margin-bottom:1.2rem">
+        ${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}
+      </dl>
+      ${user
+        ? `${this.#action('account-password', 'account:password', 'Cambiar contraseña', 'Necesitas tu contraseña actual', 'plus')}
+           ${this.#action('account-logout', 'account:logout', 'Cerrar sesión', 'Salir de esta cuenta en este navegador', 'back')}`
+        : this.#action('account-login', 'account:login', 'Iniciar sesión', 'Entra con tu usuario y contraseña', 'plus')}`;
+  }
+
+  // -------------------------------------------------------------- Usuarios
+
+  #usersHTML() {
+    const create = this.#action('user-create', 'user:create', 'Crear usuario', 'Usuario normal o administrador', 'plus');
+    if (this.users === null) return `<h2 class="panel-title">Usuarios</h2>${create}<p class="panel-note">Cargando…</p>`;
+    const rows = this.users
+      .map((u) => this.#action(
+        'user-manage', `user:${u.id}`,
+        `${u.username}${api.user?.id === u.id ? ' (tú)' : ''}`,
+        `${roleLabel(u.role)} · pulsa para restablecer su contraseña o eliminarlo`,
+        u.role === 'admin' ? 'star' : 'gamepad',
+        `data-uid="${u.id}"`,
+      )).join('');
+    return `
+      <h2 class="panel-title">Usuarios</h2>
+      <p class="panel-note">El administrador agrega y elimina películas, música y videos, y gestiona cuentas. Los usuarios solo ven y reproducen.</p>
+      ${this.usersError ? `<p class="panel-note">${esc(this.usersError)}</p>` : ''}
+      ${create}${rows}`;
+  }
+
   // ------------------------------------------------------------- Servidor
 
   #serverHTML() {
@@ -558,7 +674,7 @@ export class SettingsScreen {
       ['Servidor', online ? 'Conectado' : 'Sin conexión (modo local)'],
       ['Base de datos', online ? storeName : '—'],
       ['En el catálogo', online ? `${counts.youtube} videos · ${counts.music} canciones · ${counts.movies} películas · ${counts.series} capítulos de series` : '—'],
-      ['Clave de administrador', api.hasKey() ? 'Guardada en este navegador' : 'No guardada (solo lectura)'],
+      ['Sesión', api.user ? `${api.user.username} · ${roleLabel(api.user.role)}` : (api.loginRequired ? 'Sin iniciar' : 'Acceso abierto')],
     ];
     return `
       <h2 class="panel-title">Servidor y base de datos</h2>
@@ -566,16 +682,14 @@ export class SettingsScreen {
         <span class="dot"></span>
         <div><h3>${online ? 'Conectado al catálogo compartido' : 'Sin conexión con el servidor'}</h3>
         <p>${online
-          ? 'YouTube, Música y Películas muestran lo que hay en la base de datos. Todos ven lo mismo; solo quien tiene la clave agrega o elimina.'
+          ? 'YouTube, Música y Películas muestran lo que hay en la base de datos. Todos ven lo mismo; solo el administrador agrega o elimina.'
           : 'Se usa solo el almacenamiento de este navegador. Abre WebBox OS desde el servidor (npm start) para usar la base de datos.'}</p></div>
       </div>
       <dl class="info-list" style="margin-bottom:1.2rem">
         ${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}
       </dl>
-      ${this.#action('server-key', 'server:key', 'Clave de administrador', 'Necesaria para agregar o eliminar elementos del catálogo compartido', 'plus')}
-      ${api.hasKey() ? this.#action('server-forget', 'server:forget', 'Quitar la clave de este navegador', 'Volverás a ser solo lector', 'trash') : ''}
       ${this.#action('server-retry', 'server:retry', 'Reintentar conexión', 'Vuelve a consultar el servidor', 'reset')}
-      ${online ? this.#action('server-upload', 'server:upload', 'Subir lo guardado en este navegador', 'Envía al servidor lo que agregaste antes solo aquí (requiere la clave)', 'plus') : ''}`;
+      ${online && api.isAdmin ? this.#action('server-upload', 'server:upload', 'Subir lo guardado en este navegador', 'Envía al servidor lo que agregaste antes solo aquí (solo administrador)', 'plus') : ''}`;
   }
 
   async #serverRetry() {
@@ -586,8 +700,8 @@ export class SettingsScreen {
   }
 
   async #serverUpload() {
-    if (!api.hasKey()) {
-      toast('Primero escribe la clave de administrador');
+    if (!api.isAdmin) {
+      toast('Solo el administrador puede subir contenido al servidor');
       return;
     }
     toast('Subiendo…');
@@ -597,7 +711,7 @@ export class SettingsScreen {
     if (r.existing) parts.push(`${r.existing} ya estaban`);
     if (r.skipped) parts.push(`${r.skipped} son archivos del equipo (no se suben)`);
     if (r.failed) parts.push(`${r.failed} con error`);
-    if (r.stopped) parts.push('se detuvo: clave incorrecta o servidor sin clave');
+    if (r.stopped) parts.push('se detuvo: sin permiso de administrador');
     toast(parts.join(' · '), 5000);
     this.rerender(true);
   }
@@ -652,14 +766,34 @@ export class SettingsScreen {
         }
         break;
       }
-      case 'server-key':
-        this.server?.onSetKey?.();
-        break;
-      case 'server-forget':
-        api.clearKey();
-        toast('Clave quitada de este navegador');
+      case 'font': {
+        config.set(el.dataset.kind === 'title' ? 'titleFont' : 'font', el.dataset.id);
         this.rerender(true);
         break;
+      }
+      case 'font-reset':
+        config.set('font', 'inter');
+        config.set('titleFont', 'same');
+        toast('Fuentes restablecidas');
+        this.rerender(true);
+        break;
+      case 'account-login':
+        this.accounts?.showLogin();
+        break;
+      case 'account-logout':
+        this.accounts?.logout();
+        break;
+      case 'account-password':
+        this.accounts?.changePassword();
+        break;
+      case 'user-create':
+        this.accounts?.createUser();
+        break;
+      case 'user-manage': {
+        const user = this.users?.find((u) => String(u.id) === el.dataset.uid);
+        if (user) this.accounts?.manageUser(user);
+        break;
+      }
       case 'server-retry':
         this.#serverRetry();
         break;

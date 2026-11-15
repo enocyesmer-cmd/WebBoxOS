@@ -31,6 +31,8 @@ const DEFAULTS = {
   stickNav: true,
   keyboardThrottle: true,
   background: 'aurora',
+  font: 'inter', // fuente del texto (js/data/fonts.js)
+  titleFont: 'same', // fuente de los títulos: 'same' = la misma del texto
   uiScale: 100,
   overscan: 0,
   reduceMotion: false,
@@ -49,6 +51,8 @@ function sanitize(raw) {
     if (key === 'mappings') continue;
     if (typeof raw[key] === typeof DEFAULTS[key]) out[key] = raw[key];
   }
+  out.font = String(out.font).slice(0, 40);
+  out.titleFont = String(out.titleFont).slice(0, 40);
   out.sensitivity = clamp(Math.round(out.sensitivity), 1, 5);
   out.stickDeadzone = clamp(out.stickDeadzone, 0.2, 0.9);
   out.uiScale = clamp(Math.round(out.uiScale), 70, 140);

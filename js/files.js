@@ -46,12 +46,13 @@ export class FilesScreen {
    * @param {{root:HTMLElement, focus:object, dialog:object, onOpenMedia:(file:File,name:string)=>void,
    *   onAddMovie:(entry:object,name:string)=>Promise<void>}} opts
    */
-  constructor({ root, focus, dialog, onOpenMedia, onAddMovie }) {
+  constructor({ root, focus, dialog, onOpenMedia, onAddMovie, onInstallApp }) {
     this.root = root;
     this.focus = focus;
     this.dialog = dialog;
     this.onOpenMedia = onOpenMedia;
     this.onAddMovie = onAddMovie;
+    this.onInstallApp = onInstallApp;
     this.stack = [];
     this.rootDirectory = null;
     this.entries = [];
@@ -681,6 +682,15 @@ export class FilesScreen {
     }
 
     const kind = fileType(entry.name);
+    // Un .zip o .apk se instala como aplicación web (el instalador valida el contenido).
+    if (/\.(zip|apk)$/i.test(entry.name) && this.onInstallApp) {
+      try {
+        await this.onInstallApp(await getEntryFile(entry));
+      } catch (err) {
+        toast(`No se pudo leer el archivo: ${err?.message || 'permiso denegado'}`, 4000);
+      }
+      return;
+    }
     if (!['video', 'audio', 'image'].includes(kind)) {
       toast('Este tipo de archivo no tiene un visor integrado.');
       return;

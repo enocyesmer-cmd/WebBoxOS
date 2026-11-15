@@ -10,4 +10,5 @@
 
 CREATE USER IF NOT EXISTS 'webbox'@'localhost' IDENTIFIED BY 'CAMBIA_ESTA_CLAVE';
 GRANT SELECT, INSERT, DELETE ON webbox.items TO 'webbox'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE ON webbox.usuarios TO 'webbox'@'localhost';
 FLUSH PRIVILEGES;

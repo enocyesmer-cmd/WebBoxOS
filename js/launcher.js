@@ -12,6 +12,7 @@ import { logo } from './data/logos.js';
 import { icon } from './icons.js';
 import { storage } from './core/storage.js';
 import { esc } from './ui.js';
+import { lighten } from './appRuntime.js';
 
 const APP_BY_ID = new Map(APPS.map((a) => [a.id, a]));
 const REC_BY_ID = new Map(RECOMMENDED.map((r) => [r.id, r]));
@@ -24,12 +25,15 @@ export class Launcher {
    *   onMenu:(item:object)=>void, onChooseLocation:(key:string)=>void,
    *   getLocations:()=>Record<string,{name:string}>}} opts
    */
-  constructor({ homeEl, appsEl, onOpen, onMenu, onChooseLocation, getLocations }) {
+  constructor({ homeEl, appsEl, onOpen, onMenu, onChooseLocation, getLocations, onInstall }) {
     this.homeEl = homeEl;
     this.appsEl = appsEl;
     this.onOpen = onOpen;
     this.onMenu = onMenu;
     this.onChooseLocation = onChooseLocation;
+    this.onInstall = onInstall;
+    this.installed = []; // apps instaladas (appRuntime.js), ya convertidas en tarjetas
+    this.installedById = new Map();
     this.getLocations = getLocations ?? (() => ({}));
     this.recents = this.#loadRecents();
     this.hidden = new Set(storage.get('hiddenCards', []));
@@ -42,6 +46,10 @@ export class Launcher {
         this.onChooseLocation?.(loc.dataset.loc);
         return;
       }
+      if (e.target.closest('[data-act="app-install"]')) {
+        this.onInstall?.();
+        return;
+      }
       if (e.target.closest('[data-act="restore-hidden"]')) {
         this.restoreAll();
         return;
@@ -50,7 +58,7 @@ export class Launcher {
       if (!card) return;
       const item =
         card.dataset.kind === 'app'
-          ? APP_BY_ID.get(card.dataset.id)
+          ? this.#find(card.dataset.id)
           : REC_BY_ID.get(card.dataset.id);
       if (!item) return;
       this.#press(card.dataset.kind, item);
@@ -77,13 +85,36 @@ export class Launcher {
     this.pending = { key, timer };
   }
 
+  #find(id) {
+    return this.installedById.get(id) ?? APP_BY_ID.get(id);
+  }
+
+  /** Apps instaladas por el usuario: aparecen en Aplicaciones (y en favoritas si se marcaron). */
+  setInstalledApps(list) {
+    this.installed = list.map((a) => ({
+      id: `inst:${a.id}`,
+      appId: a.id,
+      name: a.name,
+      icon: 'apps',
+      c1: a.color,
+      c2: lighten(a.color),
+      iconData: a.icon || null,
+      installed: true,
+      favorite: Boolean(a.favorite),
+      meta: a,
+    }));
+    this.installedById = new Map(this.installed.map((a) => [a.id, a]));
+    this.render();
+  }
+
   render() {
-    const favorites = FAVORITES.filter((id) => !this.hidden.has(id));
+    const favoriteIds = [...FAVORITES, ...this.installed.filter((a) => a.favorite).map((a) => a.id)];
+    const favorites = favoriteIds.filter((id) => !this.hidden.has(id));
     const recs = RECOMMENDED.filter((r) => !this.hidden.has(r.id));
-    const apps = APPS.filter((a) => !this.hidden.has(a.id));
+    const apps = [...APPS, ...this.installed].filter((a) => !this.hidden.has(a.id));
 
     this.homeEl.innerHTML = `
-      ${this.#row('favorites', 'Aplicaciones favoritas', 'star', favorites.map((id) => this.#appCard(APP_BY_ID.get(id), 'fav')).join('') || this.#emptyRow())}
+      ${this.#row('favorites', 'Aplicaciones favoritas', 'star', favorites.map((id) => this.#appCard(this.#find(id), 'fav')).join('') || this.#emptyRow())}
       ${this.#row('recents', 'Recientes', 'clock', this.#recentsHTML())}
       ${this.#row('recommended', 'Recomendado para ti', 'film', recs.map((r) => this.#recCard(r)).join('') || this.#emptyRow())}
     `;
@@ -91,6 +122,7 @@ export class Launcher {
     this.appsEl.innerHTML = `
       <h1 class="screen-title">Aplicaciones</h1>
       ${this.#locationsHTML()}
+      ${this.#installHTML()}
       <p class="apps-tip">Pulsa dos veces una aplicación para cambiar su icono o eliminarla.</p>
       <div class="grid">${apps.map((a) => this.#appCard(a, 'all')).join('')}</div>
       ${this.#restoreHTML()}
@@ -99,7 +131,7 @@ export class Launcher {
 
   /** Registra una aplicación abierta y refresca la fila de recientes. */
   recordRecent(appId) {
-    if (!APP_BY_ID.has(appId)) return;
+    if (!this.#find(appId)) return;
     this.recents = [appId, ...this.recents.filter((id) => id !== appId)].slice(0, MAX_RECENTS);
     storage.set('recents', this.recents);
     const track = this.homeEl.querySelector('[data-track="recents"]');
@@ -158,7 +190,7 @@ export class Launcher {
   #loadRecents() {
     const saved = storage.get('recents', null);
     const list = Array.isArray(saved)
-      ? saved.filter((id) => APP_BY_ID.has(id))
+      ? saved.filter((id) => APP_BY_ID.has(id) || String(id).startsWith('inst:'))
       : DEFAULT_RECENTS.slice();
     return list.slice(0, MAX_RECENTS);
   }
@@ -166,7 +198,8 @@ export class Launcher {
   #recentsHTML() {
     const list = this.recents.filter((id) => !this.hidden.has(id));
     if (!list.length) return '<p class="row-empty">Aún no has abierto aplicaciones.</p>';
-    return list.map((id) => this.#appCard(APP_BY_ID.get(id), 'recent')).join('');
+    const cards = list.filter((id) => this.#find(id)).map((id) => this.#appCard(this.#find(id), 'recent')).join('');
+    return cards || '<p class="row-empty">Aún no has abierto aplicaciones.</p>';
   }
 
   #emptyRow() {
@@ -194,6 +227,23 @@ export class Launcher {
       </section>`;
   }
 
+  #installHTML() {
+    const n = this.installed.length;
+    return `
+      <section class="locations apps-install" aria-label="Instalar aplicaciones">
+        <h2 class="locations-title"><span class="row-icon">${icon('apps')}</span>Aplicaciones instaladas</h2>
+        <p class="locations-sub">${n ? `Tienes ${n} app${n === 1 ? '' : 's'} instalada${n === 1 ? '' : 's'}. ` : ''}Instala apps web desde un archivo .zip (con app.json e index.html) o un APK hecho con Cordova/Capacitor. También puedes abrir un .zip desde el Gestor de archivos.</p>
+        <div class="locations-list">
+          <div class="loc-row" role="button" tabindex="-1" data-focusable data-zone="main"
+               data-fid="apps:install" data-act="app-install">
+            <span class="loc-ico">${icon('plus')}</span>
+            <span class="loc-text"><b>Instalar app</b><small>Elegir un .zip o .apk</small></span>
+            <span class="loc-action">Elegir archivo</span>
+          </div>
+        </div>
+      </section>`;
+  }
+
   #restoreHTML() {
     if (!this.hidden.size) return '';
     const n = this.hidden.size;
@@ -214,7 +264,7 @@ export class Launcher {
 
   /** Arte de la tarjeta: foto propia > logo a color > icono de trazo. */
   #art(item) {
-    const custom = this.icons[item.id];
+    const custom = this.icons[item.id] || item.iconData;
     if (custom) return `<span class="card-art card-art--plate"><img class="card-img" src="${custom}" alt=""></span>`;
     const svg = logo(item.id);
     if (svg) return `<span class="card-art card-art--plate">${svg}</span>`;

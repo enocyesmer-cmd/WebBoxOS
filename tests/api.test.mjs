@@ -69,7 +69,7 @@ const song = { kind: 'music', title: 'Mi canción', url: 'https://www.youtube.co
 console.log('API: lectura pública');
 await test('health informa el almacén', async () => {
   const r = await api('/api/health');
-  assert.deepEqual(r.data, { ok: true, store: 'memory' });
+  assert.deepEqual(r.data, { ok: true, store: 'memory', login: false, register: false });
 });
 await test('catálogo vacío y filtro por tipo', async () => {
   assert.deepEqual((await api('/api/items')).data, { items: [] });
@@ -219,6 +219,117 @@ await test('5 claves incorrectas bloquean un minuto (incluso la correcta)', asyn
   assert.ok(Number(locked.headers.get('retry-after')) > 0);
   assert.equal((await api('/api/items')).status, 200); // la lectura sigue funcionando
 });
+
+
+console.log('Cuentas: inicio de sesión y roles');
+{
+  const { hashPassword } = await import('../server/auth.js');
+  const accStore = createMemoryStore();
+  await accStore.users.create({ username: 'admin', hash: await hashPassword('clave-admin-1'), role: 'admin' });
+  const s3 = createServer(createApp({ store: accStore, adminKey: '', root, sessionSecret: 'secreto-de-prueba-largo-123', requireLogin: true, allowRegister: false }));
+  await new Promise((r) => s3.listen(0, '127.0.0.1', r));
+  const b3 = `http://127.0.0.1:${s3.address().port}`;
+  const call = async (path, { method = 'GET', token, body } = {}) => {
+    const headers = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const res = await fetch(b3 + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const text = await res.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch { /* sin cuerpo */ }
+    return { status: res.status, data };
+  };
+  let adminToken = '';
+  let userToken = '';
+
+  await test('health avisa de que el inicio de sesión es obligatorio', async () => {
+    assert.equal((await call('/api/health')).data.login, true);
+  });
+  await test('sin sesión no se ve el catálogo ni se agrega (401)', async () => {
+    assert.equal((await call('/api/items')).status, 401);
+    assert.equal((await call('/api/items', { method: 'POST', body: song })).status, 401);
+    assert.equal((await call('/api/users')).status, 401);
+  });
+  await test('login: datos incorrectos 401, correctos 200 con token y sin hash', async () => {
+    assert.equal((await call('/api/login', { method: 'POST', body: { username: 'admin', password: 'mala' } })).status, 401);
+    assert.equal((await call('/api/login', { method: 'POST', body: { username: 'nadie', password: 'loquesea1' } })).status, 401);
+    const ok = await call('/api/login', { method: 'POST', body: { username: 'ADMIN', password: 'clave-admin-1' } });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.data.user.role, 'admin');
+    assert.ok(!JSON.stringify(ok.data).includes('scrypt'));
+    adminToken = ok.data.token;
+    assert.equal((await call('/api/me', { token: adminToken })).data.user.username, 'admin');
+  });
+  await test('el administrador crea un usuario; los duplicados y datos inválidos se rechazan', async () => {
+    const made = await call('/api/users', { method: 'POST', token: adminToken, body: { username: 'Ana', password: 'ana-clave-1' } });
+    assert.equal(made.status, 201);
+    assert.equal(made.data.user.role, 'user');
+    assert.equal((await call('/api/users', { method: 'POST', token: adminToken, body: { username: 'ana', password: 'otra-clave-1' } })).status, 409);
+    assert.equal((await call('/api/users', { method: 'POST', token: adminToken, body: { username: 'x', password: 'otra-clave-1' } })).status, 422);
+    assert.equal((await call('/api/users', { method: 'POST', token: adminToken, body: { username: 'bob', password: '123' } })).status, 422);
+    assert.equal((await call('/api/users', { method: 'POST', token: adminToken, body: { username: 'bob', password: 'bob-clave-1', role: 'dios' } })).status, 422);
+    const ana = await call('/api/login', { method: 'POST', body: { username: 'ana', password: 'ana-clave-1' } });
+    assert.equal(ana.status, 200);
+    userToken = ana.data.token;
+  });
+  await test('un usuario normal ve el catálogo pero no agrega, borra ni gestiona usuarios (403)', async () => {
+    assert.equal((await call('/api/items', { token: userToken })).status, 200);
+    assert.equal((await call('/api/items', { method: 'POST', token: userToken, body: song })).status, 403);
+    assert.equal((await call('/api/items/1', { method: 'DELETE', token: userToken })).status, 403);
+    assert.equal((await call('/api/users', { token: userToken })).status, 403);
+  });
+  await test('el administrador agrega contenido y el usuario lo ve', async () => {
+    assert.equal((await call('/api/items', { method: 'POST', token: adminToken, body: song })).status, 201);
+    assert.equal((await call('/api/items', { token: userToken })).data.items.length, 1);
+  });
+  await test('token manipulado o inventado: 401', async () => {
+    const [payload] = userToken.split('.');
+    assert.equal((await call('/api/me', { token: `${payload}.firmafalsa` })).status, 401);
+    assert.equal((await call('/api/me', { token: 'basura' })).status, 401);
+    const forged = Buffer.from(JSON.stringify({ u: 1, f: 'x', e: Date.now() + 1e9 })).toString('base64url');
+    assert.equal((await call('/api/me', { token: `${forged}.${userToken.split('.')[1]}` })).status, 401);
+  });
+  await test('cambiar la propia contraseña: exige la actual y cierra las sesiones viejas', async () => {
+    assert.equal((await call('/api/me/password', { method: 'POST', token: userToken, body: { current: 'mala', password: 'nueva-clave-1' } })).status, 403);
+    const changed = await call('/api/me/password', { method: 'POST', token: userToken, body: { current: 'ana-clave-1', password: 'nueva-clave-1' } });
+    assert.equal(changed.status, 200);
+    assert.equal((await call('/api/me', { token: userToken })).status, 401); // la sesión anterior ya no vale
+    assert.equal((await call('/api/me', { token: changed.data.token })).status, 200);
+    assert.equal((await call('/api/login', { method: 'POST', body: { username: 'ana', password: 'nueva-clave-1' } })).status, 200);
+    userToken = changed.data.token;
+  });
+  await test('restablecer contraseña de otro (admin) y eliminar usuarios con sus reglas', async () => {
+    const list = (await call('/api/users', { token: adminToken })).data.users;
+    const ana = list.find((u) => u.username === 'ana');
+    const admin = list.find((u) => u.username === 'admin');
+    assert.equal((await call(`/api/users/${ana.id}/password`, { method: 'POST', token: adminToken, body: { password: 'reset-clave-1' } })).status, 204);
+    assert.equal((await call('/api/login', { method: 'POST', body: { username: 'ana', password: 'reset-clave-1' } })).status, 200);
+    assert.equal((await call(`/api/users/${admin.id}`, { method: 'DELETE', token: adminToken })).status, 409); // no a sí mismo
+    assert.equal((await call(`/api/users/${ana.id}`, { method: 'DELETE', token: adminToken })).status, 204);
+    assert.equal((await call('/api/me', { token: userToken })).status, 401); // sesión de un usuario borrado
+    assert.equal((await call(`/api/users/${ana.id}`, { method: 'DELETE', token: adminToken })).status, 404);
+  });
+  await test('el registro público está desactivado por defecto (403)', async () => {
+    assert.equal((await call('/api/register', { method: 'POST', body: { username: 'intruso', password: 'intruso-1' } })).status, 403);
+  });
+  await test('muchos intentos fallidos bloquean el acceso (429), incluso con la clave buena', async () => {
+    let last = 0;
+    for (let i = 0; i < 9; i += 1) last = (await call('/api/login', { method: 'POST', body: { username: 'admin', password: `mala-${i}` } })).status;
+    assert.equal(last, 429);
+    assert.equal((await call('/api/login', { method: 'POST', body: { username: 'admin', password: 'clave-admin-1' } })).status, 429);
+  });
+  s3.close();
+
+  await test('con ALLOW_REGISTER=1 cualquiera crea una cuenta de usuario normal (nunca admin)', async () => {
+    const s4 = createServer(createApp({ store: createMemoryStore(), root, sessionSecret: 'otro-secreto-de-prueba-123', requireLogin: true, allowRegister: true }));
+    await new Promise((r) => s4.listen(0, '127.0.0.1', r));
+    const res = await fetch(`http://127.0.0.1:${s4.address().port}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'nuevo', password: 'nuevo-clave-1', role: 'admin' }) });
+    const data = await res.json();
+    assert.equal(res.status, 201);
+    assert.equal(data.user.role, 'user');
+    s4.close();
+  });
+}
 
 console.log('Sin ADMIN_KEY configurada');
 await test('las escrituras se desactivan (503) y la lectura sigue', async () => {

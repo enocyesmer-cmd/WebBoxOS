@@ -137,6 +137,8 @@ const DEFAULTS = {
   stickNav: true,
   keyboardThrottle: true,
   background: 'aurora',
+  font: 'inter', // fuente del texto (js/data/fonts.js)
+  titleFont: 'same', // fuente de los títulos: 'same' = la misma del texto
   uiScale: 100,
   overscan: 0,
   reduceMotion: false,
@@ -155,6 +157,8 @@ function sanitize(raw) {
     if (key === 'mappings') continue;
     if (typeof raw[key] === typeof DEFAULTS[key]) out[key] = raw[key];
   }
+  out.font = String(out.font).slice(0, 40);
+  out.titleFont = String(out.titleFont).slice(0, 40);
   out.sensitivity = clamp(Math.round(out.sensitivity), 1, 5);
   out.stickDeadzone = clamp(out.stickDeadzone, 0.2, 0.9);
   out.uiScale = clamp(Math.round(out.uiScale), 70, 140);
@@ -992,6 +996,477 @@ function toast(message, ms = 2800) {
 }
     Object.assign(exports, { esc, toast });
   };
+  __modules["js/core/zip.js"] = function (module, exports, __require) {
+/**
+ * Lector de ZIP sin dependencias (usa DecompressionStream del navegador).
+ * Soporta archivos almacenados (método 0) y comprimidos con deflate (método 8).
+ * No soporta ZIP64 ni cifrado: se rechazan con un mensaje claro.
+ *
+ * Seguridad: los nombres se normalizan (sin "..", sin rutas absolutas) y la descompresión
+ * se corta si un archivo crece más de lo que declara su cabecera (bombas de compresión).
+ */
+const SIG_EOCD = 0x06054b50;
+const SIG_CENTRAL = 0x02014b50;
+const SIG_LOCAL = 0x04034b50;
+
+const ZIP_LIMITS = {
+  entries: 3000,
+  fileBytes: 60 * 1024 * 1024, // por archivo
+  totalBytes: 250 * 1024 * 1024, // todo el paquete descomprimido
+};
+
+/** Ruta limpia dentro del paquete, o null si no es segura. */
+function safePath(name) {
+  const text = String(name ?? '').replace(/\\/g, '/');
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f]/.test(text) || /^[a-zA-Z]:/.test(text) || text.startsWith('/')) return null;
+  const parts = [];
+  for (const part of text.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') return null;
+    parts.push(part);
+  }
+  return parts.length ? parts.join('/') : null;
+}
+
+let crcTable = null;
+function crc32(bytes) {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n += 1) {
+      let c = n;
+      for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      crcTable[n] = c >>> 0;
+    }
+  }
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i += 1) crc = crcTable[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+const toBytes = (buf) => (buf instanceof Uint8Array ? buf : new Uint8Array(buf));
+
+/**
+ * Lista los archivos del ZIP (sin descomprimir nada todavía).
+ * @returns {{name:string, path:string|null, size:number, packed:number, method:number, crc:number, offset:number, isDir:boolean}[]}
+ */
+function readZipDirectory(buffer) {
+  const bytes = toBytes(buffer);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.length < 22) throw new Error('El archivo no es un ZIP válido.');
+
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 65535); i -= 1) {
+    if (view.getUint32(i, true) === SIG_EOCD) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error('El archivo no es un ZIP válido (o está dañado).');
+
+  const count = view.getUint16(eocd + 10, true);
+  const dirSize = view.getUint32(eocd + 12, true);
+  let pos = view.getUint32(eocd + 16, true);
+  if (count === 0xffff || pos === 0xffffffff || dirSize === 0xffffffff) {
+    throw new Error('Este ZIP usa ZIP64 (demasiado grande); no es compatible.');
+  }
+  if (count > ZIP_LIMITS.entries) throw new Error(`El paquete tiene demasiados archivos (máximo ${ZIP_LIMITS.entries}).`);
+
+  const decoder = new TextDecoder('utf-8');
+  const entries = [];
+  for (let i = 0; i < count; i += 1) {
+    if (pos + 46 > bytes.length || view.getUint32(pos, true) !== SIG_CENTRAL) throw new Error('El índice del ZIP está dañado.');
+    const flags = view.getUint16(pos + 8, true);
+    const method = view.getUint16(pos + 10, true);
+    const crc = view.getUint32(pos + 16, true);
+    const packed = view.getUint32(pos + 20, true);
+    const size = view.getUint32(pos + 24, true);
+    const nameLen = view.getUint16(pos + 28, true);
+    const extraLen = view.getUint16(pos + 30, true);
+    const commentLen = view.getUint16(pos + 32, true);
+    const offset = view.getUint32(pos + 42, true);
+    const name = decoder.decode(bytes.subarray(pos + 46, pos + 46 + nameLen));
+    if (flags & 1) throw new Error('El ZIP está cifrado con contraseña; no es compatible.');
+    const isDir = name.endsWith('/');
+    entries.push({ name, path: isDir ? null : safePath(name), size, packed, method, crc, offset, isDir });
+    pos += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+async function inflateRaw(data, expected) {
+  if (typeof DecompressionStream === 'undefined') throw new Error('Este navegador no puede descomprimir ZIP (actualízalo).');
+  const reader = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > expected) {
+      await reader.cancel();
+      throw new Error('Un archivo del ZIP es más grande de lo que declara (paquete sospechoso).');
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
+/** Descomprime un archivo del ZIP y comprueba su CRC. */
+async function extractEntry(buffer, entry) {
+  const bytes = toBytes(buffer);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (entry.size > ZIP_LIMITS.fileBytes) throw new Error(`"${entry.name}" es demasiado grande (máximo ${Math.round(ZIP_LIMITS.fileBytes / 1048576)} MB).`);
+  if (entry.offset + 30 > bytes.length || view.getUint32(entry.offset, true) !== SIG_LOCAL) throw new Error('El ZIP está dañado.');
+  const start = entry.offset + 30 + view.getUint16(entry.offset + 26, true) + view.getUint16(entry.offset + 28, true);
+  const data = bytes.subarray(start, start + entry.packed);
+  let out;
+  if (entry.method === 0) out = data;
+  else if (entry.method === 8) out = await inflateRaw(data, entry.size);
+  else throw new Error(`Método de compresión no compatible (${entry.method}) en "${entry.name}".`);
+  if (out.length !== entry.size) throw new Error(`"${entry.name}" no tiene el tamaño esperado (ZIP dañado).`);
+  if (crc32(out) !== entry.crc) throw new Error(`"${entry.name}" no pasa la verificación (ZIP dañado).`);
+  return out;
+}
+    Object.assign(exports, { ZIP_LIMITS, safePath, crc32, readZipDirectory, extractEntry });
+  };
+  __modules["js/appRuntime.js"] = function (module, exports, __require) {
+/**
+ * Runtime de aplicaciones web instaladas (Parte 3).
+ *
+ * Un paquete es un ZIP con un app.json y los archivos de la app (HTML, CSS, JS, imágenes...).
+ * Se guarda en IndexedDB, con un espacio de datos separado por aplicación, y se ejecuta en un
+ * iframe aislado (ver appHost.js). También acepta:
+ *   - un ZIP sin app.json pero con index.html (se deduce nombre e id del nombre del archivo),
+ *   - un APK que en realidad es una web (Cordova/Capacitor): se extrae la carpeta web.
+ *
+ * Las funciones de la primera mitad son puras (sin DOM ni IndexedDB) y están probadas en Node.
+ */
+const { readZipDirectory, extractEntry, ZIP_LIMITS, safePath } = __require("js/core/zip.js");
+
+const PERMISSIONS = ['storage', 'input'];
+const APP_LIMITS = { name: 40, description: 120, version: 20 };
+const ID_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
+const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const ICON_EXT = /\.(png|jpe?g|webp|svg|gif)$/i;
+const JUNK = /(^|\/)(__MACOSX|\.DS_Store|Thumbs\.db)(\/|$)/;
+
+const MIME = {
+  html: 'text/html', htm: 'text/html', css: 'text/css', js: 'text/javascript', mjs: 'text/javascript',
+  json: 'application/json', svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', ico: 'image/x-icon', txt: 'text/plain',
+  mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav', m4a: 'audio/mp4', mp4: 'video/mp4', webm: 'video/webm',
+  woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', wasm: 'application/wasm', xml: 'application/xml',
+};
+
+function mimeFor(path) {
+  const ext = String(path).toLowerCase().split('.').pop();
+  return MIME[ext] ?? 'application/octet-stream';
+}
+
+function slugify(text) {
+  const slug = String(text ?? '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  return slug.length >= 2 ? slug : `app-${slug || 'x'}`.slice(0, 40);
+}
+
+const dirOf = (path) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
+const baseName = (fileName) => String(fileName ?? 'app').replace(/\.[^.]+$/, '');
+
+/**
+ * Elige la carpeta raíz de la app dentro del paquete.
+ * @param {string[]} paths rutas ya normalizadas
+ * @returns {{ok:true, root:string, kind:'manifest'|'apk-web'|'index'}|{ok:false, error:string}}
+ */
+function findPackageRoot(paths, fileName = '') {
+  const clean = paths.filter((p) => !JUNK.test(p));
+  const depth = (p) => p.split('/').length;
+  const shallowest = (name) => clean.filter((p) => p.split('/').pop() === name && depth(p) <= 2).sort((a, b) => depth(a) - depth(b))[0];
+
+  const manifest = shallowest('app.json');
+  if (manifest) return { ok: true, root: dirOf(manifest), kind: 'manifest' };
+
+  if (/\.apk$/i.test(fileName)) {
+    for (const web of ['assets/www/index.html', 'assets/public/index.html']) {
+      if (clean.includes(web)) return { ok: true, root: dirOf(web), kind: 'apk-web' };
+    }
+    return {
+      ok: false,
+      error: 'Este APK es una app de Android nativa (con código Android), no una web empaquetada: un navegador no puede ejecutarla. Solo se importan APK hechos con Cordova o Capacitor.',
+    };
+  }
+
+  const index = shallowest('index.html');
+  if (index) return { ok: true, root: dirOf(index), kind: 'index' };
+  return { ok: false, error: 'El paquete no tiene app.json ni index.html en su carpeta principal.' };
+}
+
+/**
+ * Valida y completa el manifiesto.
+ * @param {unknown} raw contenido de app.json (o {} si se deduce)
+ * @param {Set<string>} files rutas disponibles (relativas a la raíz)
+ * @returns {{ok:true, manifest:object}|{ok:false, error:string}}
+ */
+function validateManifest(raw, files, fallbackName = 'app') {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'app.json debe ser un objeto JSON.' };
+  const text = (value, max, label) => {
+    if (value === undefined || value === null) return { value: '' };
+    // eslint-disable-next-line no-control-regex
+    if (typeof value !== 'string' || /[\u0000-\u001f]/.test(value)) return { error: `"${label}" debe ser texto sin caracteres de control.` };
+    if (value.trim().length > max) return { error: `"${label}" admite como máximo ${max} caracteres.` };
+    return { value: value.trim() };
+  };
+
+  const name = text(raw.name || fallbackName, APP_LIMITS.name, 'name');
+  if (name.error) return { ok: false, error: name.error };
+  if (!name.value) return { ok: false, error: 'Falta el nombre de la app ("name").' };
+  const version = text(raw.version ?? '1.0', APP_LIMITS.version, 'version');
+  if (version.error) return { ok: false, error: version.error };
+  const description = text(raw.description, APP_LIMITS.description, 'description');
+  if (description.error) return { ok: false, error: description.error };
+
+  const id = raw.id === undefined ? slugify(name.value) : raw.id;
+  if (typeof id !== 'string' || !ID_RE.test(id)) {
+    return { ok: false, error: '"id" debe tener 2 a 40 caracteres: minúsculas, números y guiones (por ejemplo "mi-juego").' };
+  }
+
+  const entry = safePath(raw.entry ?? 'index.html');
+  if (!entry || !/\.html?$/i.test(entry)) return { ok: false, error: '"entry" debe ser un archivo .html dentro del paquete.' };
+  if (!files.has(entry)) return { ok: false, error: `No se encuentra el archivo de entrada "${entry}" en el paquete.` };
+
+  let icon = null;
+  if (raw.icon !== undefined && raw.icon !== null && raw.icon !== '') {
+    icon = safePath(raw.icon);
+    if (!icon || !ICON_EXT.test(icon) || !files.has(icon)) return { ok: false, error: '"icon" debe ser una imagen (png, jpg, svg, webp) incluida en el paquete.' };
+  }
+
+  const color = raw.color === undefined ? '#334155' : raw.color;
+  if (typeof color !== 'string' || !COLOR_RE.test(color)) return { ok: false, error: '"color" debe ser un color como #1e3a8a.' };
+
+  const permissions = raw.permissions === undefined ? ['storage'] : raw.permissions;
+  if (!Array.isArray(permissions) || permissions.some((p) => !PERMISSIONS.includes(p))) {
+    return { ok: false, error: `"permissions" solo admite: ${PERMISSIONS.join(', ')}.` };
+  }
+
+  const input = raw.input === undefined ? 'launcher' : raw.input;
+  if (!['launcher', 'app'].includes(input)) return { ok: false, error: '"input" debe ser "launcher" o "app".' };
+
+  return {
+    ok: true,
+    manifest: { id, name: name.value, version: version.value, description: description.value, entry, icon, color, permissions: [...new Set(permissions)], input },
+  };
+}
+
+/** Mezcla un color con blanco para el segundo tono del degradado de la casilla. */
+function lighten(hex, amount = 0.35) {
+  const n = parseInt(hex.slice(1), 16);
+  const mix = (c) => Math.round(c + (255 - c) * amount);
+  const out = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(mix);
+  return `#${out.map((c) => c.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/**
+ * Lee un paquete, lo valida y devuelve sus archivos listos para guardar.
+ * @param {ArrayBuffer|Uint8Array} buffer
+ * @param {string} fileName nombre del .zip/.apk (para deducir id y nombre si no hay app.json)
+ * @returns {Promise<{manifest:object, source:string, files:Map<string,Uint8Array>, bytes:number}>}
+ */
+async function readPackage(buffer, fileName = 'app.zip') {
+  const entries = readZipDirectory(buffer).filter((e) => !e.isDir && e.path && !JUNK.test(e.path));
+  const found = findPackageRoot(entries.map((e) => e.path), fileName);
+  if (!found.ok) throw new Error(found.error);
+
+  const prefix = found.root ? `${found.root}/` : '';
+  const inRoot = entries.filter((e) => e.path.startsWith(prefix));
+  const total = inRoot.reduce((sum, e) => sum + e.size, 0);
+  if (total > ZIP_LIMITS.totalBytes) throw new Error(`El paquete es demasiado grande (máximo ${Math.round(ZIP_LIMITS.totalBytes / 1048576)} MB descomprimido).`);
+
+  const files = new Map();
+  for (const e of inRoot) files.set(e.path.slice(prefix.length), await extractEntry(buffer, e));
+
+  let raw = {};
+  if (found.kind === 'manifest') {
+    try {
+      raw = JSON.parse(new TextDecoder('utf-8').decode(files.get('app.json')));
+    } catch {
+      throw new Error('app.json no es un JSON válido.');
+    }
+  }
+  const pretty = baseName(fileName).replace(/[-_]+/g, ' ').trim();
+  const checked = validateManifest(raw, new Set(files.keys()), pretty || 'Mi app');
+  if (!checked.ok) throw new Error(checked.error);
+  return { manifest: checked.manifest, source: found.kind, files, bytes: total };
+}
+
+// ===========================================================================
+// Almacenamiento (IndexedDB). Solo en el navegador.
+// ===========================================================================
+
+const DB_NAME = 'webbox-apps';
+const DB_VERSION = 2;
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('apps')) db.createObjectStore('apps', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('files')) db.createObjectStore('files', { keyPath: 'key' });
+      if (!db.objectStoreNames.contains('data')) db.createObjectStore('data', { keyPath: 'id' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+const done = (tx) => new Promise((resolve, reject) => {
+  tx.oncomplete = () => resolve();
+  tx.onerror = () => reject(tx.error);
+  tx.onabort = () => reject(tx.error || new Error('Se canceló la operación.'));
+});
+const result = (req) => new Promise((resolve, reject) => {
+  req.onsuccess = () => resolve(req.result);
+  req.onerror = () => reject(req.error);
+});
+const fileKey = (id, path) => `${id}\u0000${path}`;
+const range = (id) => IDBKeyRange.bound(`${id}\u0000`, `${id}\u0001`, false, true);
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function listApps() {
+  const db = await openDb();
+  const apps = await result(db.transaction('apps').objectStore('apps').getAll());
+  db.close();
+  return apps.sort((a, b) => a.name.localeCompare(b.name, 'es'));
+}
+
+async function getApp(id) {
+  const db = await openDb();
+  const app = await result(db.transaction('apps').objectStore('apps').get(id));
+  db.close();
+  return app ?? null;
+}
+
+/**
+ * Instala (o actualiza) un paquete.
+ * @returns {Promise<{app:object, updated:boolean}>}
+ */
+async function installPackage(buffer, fileName) {
+  const pkg = await readPackage(buffer, fileName);
+  const { manifest } = pkg;
+
+  let icon = null;
+  if (manifest.icon) {
+    const blob = new Blob([pkg.files.get(manifest.icon)], { type: mimeFor(manifest.icon) });
+    if (blob.size <= 400 * 1024) icon = await blobToDataUrl(blob);
+  }
+
+  const db = await openDb();
+  try {
+    const previous = await result(db.transaction('apps').objectStore('apps').get(manifest.id));
+    const tx = db.transaction(['apps', 'files'], 'readwrite');
+    const files = tx.objectStore('files');
+    files.delete(range(manifest.id)); // al actualizar se reemplazan todos los archivos
+    for (const [path, bytes] of pkg.files) {
+      files.put({ key: fileKey(manifest.id, path), id: manifest.id, path, blob: new Blob([bytes], { type: mimeFor(path) }) });
+    }
+    const now = Date.now();
+    const app = {
+      ...manifest,
+      icon,
+      source: pkg.source,
+      size: pkg.bytes,
+      fileCount: pkg.files.size,
+      favorite: previous?.favorite ?? false,
+      installedAt: previous?.installedAt ?? now,
+      updatedAt: now,
+    };
+    tx.objectStore('apps').put(app);
+    await done(tx);
+    return { app, updated: Boolean(previous) };
+  } finally {
+    db.close();
+  }
+}
+
+async function uninstallApp(id) {
+  const db = await openDb();
+  try {
+    const tx = db.transaction(['apps', 'files', 'data'], 'readwrite');
+    tx.objectStore('apps').delete(id);
+    tx.objectStore('files').delete(range(id));
+    tx.objectStore('data').delete(id);
+    await done(tx);
+  } finally {
+    db.close();
+  }
+}
+
+async function setFavorite(id, favorite) {
+  const db = await openDb();
+  try {
+    const tx = db.transaction('apps', 'readwrite');
+    const store = tx.objectStore('apps');
+    const app = await result(store.get(id));
+    if (app) store.put({ ...app, favorite: Boolean(favorite) });
+    await done(tx);
+  } finally {
+    db.close();
+  }
+}
+
+/** @returns {Promise<Map<string, Blob>>} ruta -> contenido */
+async function readAppFiles(id) {
+  const db = await openDb();
+  const rows = await result(db.transaction('files').objectStore('files').getAll(range(id)));
+  db.close();
+  return new Map(rows.map((r) => [r.path, r.blob]));
+}
+
+async function loadAppData(id) {
+  const db = await openDb();
+  const row = await result(db.transaction('data').objectStore('data').get(id));
+  db.close();
+  return row?.values && typeof row.values === 'object' ? row.values : {};
+}
+
+const MAX_DATA_BYTES = 2 * 1024 * 1024;
+
+/** Guarda los datos de la app (clave -> texto). Límite de 2 MB por app. */
+async function saveAppData(id, values) {
+  const clean = {};
+  let bytes = 0;
+  for (const [key, value] of Object.entries(values ?? {})) {
+    if (typeof value !== 'string') continue;
+    bytes += key.length + value.length;
+    clean[String(key).slice(0, 200)] = value;
+  }
+  if (bytes > MAX_DATA_BYTES) throw new Error('La app superó el límite de datos guardados (2 MB).');
+  const db = await openDb();
+  try {
+    const tx = db.transaction('data', 'readwrite');
+    tx.objectStore('data').put({ id, values: clean });
+    await done(tx);
+  } finally {
+    db.close();
+  }
+}
+    Object.assign(exports, { PERMISSIONS, APP_LIMITS, mimeFor, slugify, findPackageRoot, validateManifest, lighten, readPackage, listApps, getApp, installPackage, uninstallApp, setFavorite, readAppFiles, loadAppData, saveAppData });
+  };
   __modules["js/launcher.js"] = function (module, exports, __require) {
 /**
  * Launcher: pantalla de inicio (filas de tarjetas) y pantalla de aplicaciones.
@@ -1007,6 +1482,7 @@ const { logo } = __require("js/data/logos.js");
 const { icon } = __require("js/icons.js");
 const { storage } = __require("js/core/storage.js");
 const { esc } = __require("js/ui.js");
+const { lighten } = __require("js/appRuntime.js");
 
 const APP_BY_ID = new Map(APPS.map((a) => [a.id, a]));
 const REC_BY_ID = new Map(RECOMMENDED.map((r) => [r.id, r]));
@@ -1019,12 +1495,15 @@ class Launcher {
    *   onMenu:(item:object)=>void, onChooseLocation:(key:string)=>void,
    *   getLocations:()=>Record<string,{name:string}>}} opts
    */
-  constructor({ homeEl, appsEl, onOpen, onMenu, onChooseLocation, getLocations }) {
+  constructor({ homeEl, appsEl, onOpen, onMenu, onChooseLocation, getLocations, onInstall }) {
     this.homeEl = homeEl;
     this.appsEl = appsEl;
     this.onOpen = onOpen;
     this.onMenu = onMenu;
     this.onChooseLocation = onChooseLocation;
+    this.onInstall = onInstall;
+    this.installed = []; // apps instaladas (appRuntime.js), ya convertidas en tarjetas
+    this.installedById = new Map();
     this.getLocations = getLocations ?? (() => ({}));
     this.recents = this.#loadRecents();
     this.hidden = new Set(storage.get('hiddenCards', []));
@@ -1037,6 +1516,10 @@ class Launcher {
         this.onChooseLocation?.(loc.dataset.loc);
         return;
       }
+      if (e.target.closest('[data-act="app-install"]')) {
+        this.onInstall?.();
+        return;
+      }
       if (e.target.closest('[data-act="restore-hidden"]')) {
         this.restoreAll();
         return;
@@ -1045,7 +1528,7 @@ class Launcher {
       if (!card) return;
       const item =
         card.dataset.kind === 'app'
-          ? APP_BY_ID.get(card.dataset.id)
+          ? this.#find(card.dataset.id)
           : REC_BY_ID.get(card.dataset.id);
       if (!item) return;
       this.#press(card.dataset.kind, item);
@@ -1072,13 +1555,36 @@ class Launcher {
     this.pending = { key, timer };
   }
 
+  #find(id) {
+    return this.installedById.get(id) ?? APP_BY_ID.get(id);
+  }
+
+  /** Apps instaladas por el usuario: aparecen en Aplicaciones (y en favoritas si se marcaron). */
+  setInstalledApps(list) {
+    this.installed = list.map((a) => ({
+      id: `inst:${a.id}`,
+      appId: a.id,
+      name: a.name,
+      icon: 'apps',
+      c1: a.color,
+      c2: lighten(a.color),
+      iconData: a.icon || null,
+      installed: true,
+      favorite: Boolean(a.favorite),
+      meta: a,
+    }));
+    this.installedById = new Map(this.installed.map((a) => [a.id, a]));
+    this.render();
+  }
+
   render() {
-    const favorites = FAVORITES.filter((id) => !this.hidden.has(id));
+    const favoriteIds = [...FAVORITES, ...this.installed.filter((a) => a.favorite).map((a) => a.id)];
+    const favorites = favoriteIds.filter((id) => !this.hidden.has(id));
     const recs = RECOMMENDED.filter((r) => !this.hidden.has(r.id));
-    const apps = APPS.filter((a) => !this.hidden.has(a.id));
+    const apps = [...APPS, ...this.installed].filter((a) => !this.hidden.has(a.id));
 
     this.homeEl.innerHTML = `
-      ${this.#row('favorites', 'Aplicaciones favoritas', 'star', favorites.map((id) => this.#appCard(APP_BY_ID.get(id), 'fav')).join('') || this.#emptyRow())}
+      ${this.#row('favorites', 'Aplicaciones favoritas', 'star', favorites.map((id) => this.#appCard(this.#find(id), 'fav')).join('') || this.#emptyRow())}
       ${this.#row('recents', 'Recientes', 'clock', this.#recentsHTML())}
       ${this.#row('recommended', 'Recomendado para ti', 'film', recs.map((r) => this.#recCard(r)).join('') || this.#emptyRow())}
     `;
@@ -1086,6 +1592,7 @@ class Launcher {
     this.appsEl.innerHTML = `
       <h1 class="screen-title">Aplicaciones</h1>
       ${this.#locationsHTML()}
+      ${this.#installHTML()}
       <p class="apps-tip">Pulsa dos veces una aplicación para cambiar su icono o eliminarla.</p>
       <div class="grid">${apps.map((a) => this.#appCard(a, 'all')).join('')}</div>
       ${this.#restoreHTML()}
@@ -1094,7 +1601,7 @@ class Launcher {
 
   /** Registra una aplicación abierta y refresca la fila de recientes. */
   recordRecent(appId) {
-    if (!APP_BY_ID.has(appId)) return;
+    if (!this.#find(appId)) return;
     this.recents = [appId, ...this.recents.filter((id) => id !== appId)].slice(0, MAX_RECENTS);
     storage.set('recents', this.recents);
     const track = this.homeEl.querySelector('[data-track="recents"]');
@@ -1153,7 +1660,7 @@ class Launcher {
   #loadRecents() {
     const saved = storage.get('recents', null);
     const list = Array.isArray(saved)
-      ? saved.filter((id) => APP_BY_ID.has(id))
+      ? saved.filter((id) => APP_BY_ID.has(id) || String(id).startsWith('inst:'))
       : DEFAULT_RECENTS.slice();
     return list.slice(0, MAX_RECENTS);
   }
@@ -1161,7 +1668,8 @@ class Launcher {
   #recentsHTML() {
     const list = this.recents.filter((id) => !this.hidden.has(id));
     if (!list.length) return '<p class="row-empty">Aún no has abierto aplicaciones.</p>';
-    return list.map((id) => this.#appCard(APP_BY_ID.get(id), 'recent')).join('');
+    const cards = list.filter((id) => this.#find(id)).map((id) => this.#appCard(this.#find(id), 'recent')).join('');
+    return cards || '<p class="row-empty">Aún no has abierto aplicaciones.</p>';
   }
 
   #emptyRow() {
@@ -1189,6 +1697,23 @@ class Launcher {
       </section>`;
   }
 
+  #installHTML() {
+    const n = this.installed.length;
+    return `
+      <section class="locations apps-install" aria-label="Instalar aplicaciones">
+        <h2 class="locations-title"><span class="row-icon">${icon('apps')}</span>Aplicaciones instaladas</h2>
+        <p class="locations-sub">${n ? `Tienes ${n} app${n === 1 ? '' : 's'} instalada${n === 1 ? '' : 's'}. ` : ''}Instala apps web desde un archivo .zip (con app.json e index.html) o un APK hecho con Cordova/Capacitor. También puedes abrir un .zip desde el Gestor de archivos.</p>
+        <div class="locations-list">
+          <div class="loc-row" role="button" tabindex="-1" data-focusable data-zone="main"
+               data-fid="apps:install" data-act="app-install">
+            <span class="loc-ico">${icon('plus')}</span>
+            <span class="loc-text"><b>Instalar app</b><small>Elegir un .zip o .apk</small></span>
+            <span class="loc-action">Elegir archivo</span>
+          </div>
+        </div>
+      </section>`;
+  }
+
   #restoreHTML() {
     if (!this.hidden.size) return '';
     const n = this.hidden.size;
@@ -1209,7 +1734,7 @@ class Launcher {
 
   /** Arte de la tarjeta: foto propia > logo a color > icono de trazo. */
   #art(item) {
-    const custom = this.icons[item.id];
+    const custom = this.icons[item.id] || item.iconData;
     if (custom) return `<span class="card-art card-art--plate"><img class="card-img" src="${custom}" alt=""></span>`;
     const svg = logo(item.id);
     if (svg) return `<span class="card-art card-art--plate">${svg}</span>`;
@@ -1371,12 +1896,13 @@ async function deleteBackground(id) {
  * `api.online` es false y WebBox OS sigue funcionando con el almacenamiento
  * local del navegador, igual que antes. Nada se rompe.
  *
- * Leer el catálogo es público. Agregar o eliminar exige la clave de
- * administrador (ADMIN_KEY del .env), que se guarda solo en este navegador.
+ * Cuentas: con el servidor en marcha se inicia sesión con usuario y contraseña.
+ * El token de sesión se guarda solo en este navegador. El administrador agrega y
+ * elimina contenido y gestiona usuarios; el usuario normal solo ve y reproduce.
  */
 const { storage } = __require("js/core/storage.js");
 
-const KEY_NAME = 'serverAdminKey';
+const TOKEN_KEY = 'authToken';
 const TIMEOUT_MS = 5000;
 
 class ApiClient {
@@ -1385,28 +1911,44 @@ class ApiClient {
     this.store = null; // 'mysql' | 'memory'
     this.items = [];
     this.loadPromise = null;
+    this.loginRequired = false; // el servidor exige iniciar sesión
+    this.registerAllowed = false; // el servidor permite crear cuentas desde la pantalla de acceso
+    this.user = null; // { id, username, role } de la sesión actual
   }
 
   get online() {
     return this.state === 'online';
   }
 
-  getKey() {
-    return storage.get(KEY_NAME, '') || '';
+  getToken() {
+    return storage.get(TOKEN_KEY, '') || '';
   }
 
+  #setToken(token) {
+    if (token) storage.set(TOKEN_KEY, token);
+    else storage.remove(TOKEN_KEY);
+  }
+
+  /** ¿Hay que mostrar la pantalla de acceso? (servidor en marcha, exige login y no hay sesión) */
+  get needsLogin() {
+    return this.online && this.loginRequired && !this.user;
+  }
+
+  get isAdmin() {
+    return this.online && this.user?.role === 'admin';
+  }
+
+  /**
+   * ¿Puede agregar/eliminar contenido? Sin servidor (modo local) o con acceso abierto sí,
+   * como siempre; con inicio de sesión obligatorio, solo el administrador.
+   */
+  get canEdit() {
+    return !this.online || !this.loginRequired || this.isAdmin;
+  }
+
+  /** Compatibilidad: "tener la clave" ahora significa ser administrador con sesión iniciada. */
   hasKey() {
-    return this.getKey() !== '';
-  }
-
-  setKey(key) {
-    const clean = String(key ?? '').trim();
-    if (clean) storage.set(KEY_NAME, clean);
-    else storage.remove(KEY_NAME);
-  }
-
-  clearKey() {
-    storage.remove(KEY_NAME);
+    return this.isAdmin;
   }
 
   /** Nunca lanza: devuelve { ok, status, data }. status 0 = sin conexión. */
@@ -1416,7 +1958,8 @@ class ApiClient {
     try {
       const headers = {};
       if (body !== undefined) headers['Content-Type'] = 'application/json';
-      if (auth) headers['X-Admin-Key'] = this.getKey();
+      const token = this.getToken();
+      if (auth && token) headers.Authorization = `Bearer ${token}`;
       const res = await fetch(path, {
         method,
         headers,
@@ -1446,6 +1989,8 @@ class ApiClient {
     if (r.ok && r.data && r.data.ok === true) {
       this.state = 'online';
       this.store = r.data.store || null;
+      this.loginRequired = r.data.login === true;
+      this.registerAllowed = r.data.register === true;
     } else {
       this.state = 'offline';
       this.store = null;
@@ -1464,7 +2009,13 @@ class ApiClient {
           this.items = [];
           return null;
         }
-        const r = await this.#request('GET', 'api/items');
+        await this.restoreSession();
+        const r = await this.#request('GET', 'api/items', { auth: true });
+        if (r.status === 401) {
+          // Servidor en marcha pero hace falta iniciar sesión: no es "sin conexión".
+          this.items = [];
+          return null;
+        }
         if (!r.ok || !r.data || !Array.isArray(r.data.items)) {
           this.state = 'offline';
           this.items = [];
@@ -1488,28 +2039,327 @@ class ApiClient {
 
   /** @returns {Promise<{ok:true,item:object}|{ok:false,status:number,error?:string}>} */
   async create(item) {
-    if (!this.hasKey()) return { ok: false, status: 401, error: 'Falta la clave de administrador.' };
+    if (!this.isAdmin) return { ok: false, status: 403, error: 'Solo el administrador puede agregar contenido.' };
     const r = await this.#request('POST', 'api/items', { body: item, auth: true });
     if (r.ok && r.data && r.data.item) return { ok: true, item: r.data.item };
     return { ok: false, status: r.status, error: r.data && r.data.error };
   }
 
   async remove(serverId) {
-    if (!this.hasKey()) return { ok: false, status: 401, error: 'Falta la clave de administrador.' };
+    if (!this.isAdmin) return { ok: false, status: 403, error: 'Solo el administrador puede eliminar contenido.' };
     const r = await this.#request('DELETE', `api/items/${encodeURIComponent(serverId)}`, { auth: true });
     return { ok: r.ok, status: r.status, error: r.data && r.data.error };
   }
 
-  /** ¿La clave guardada es la correcta? */
-  async checkKey() {
-    if (!this.hasKey()) return false;
-    const r = await this.#request('GET', 'api/auth', { auth: true });
-    return r.ok;
+  // --------------------------------------------------------------- cuentas
+
+  /** Recupera la sesión guardada (si el token sigue valiendo). Nunca lanza. */
+  async restoreSession() {
+    if (!this.online || this.user || !this.getToken()) return this.user;
+    const r = await this.#request('GET', 'api/me', { auth: true });
+    if (r.ok && r.data?.user) this.user = r.data.user;
+    else if (r.status === 401) this.#setToken('');
+    return this.user;
+  }
+
+  /** @returns {Promise<{ok:true,user:object}|{ok:false,status:number,error:string}>} */
+  async login(username, password) {
+    return this.#startSession('api/login', { username, password });
+  }
+
+  async register(username, password) {
+    return this.#startSession('api/register', { username, password });
+  }
+
+  async #startSession(path, body) {
+    if (!this.online && !(await this.check())) return { ok: false, status: 0, error: 'No hay conexión con el servidor.' };
+    const r = await this.#request('POST', path, { body });
+    if (r.ok && r.data?.token && r.data?.user) {
+      this.#setToken(r.data.token);
+      this.user = r.data.user;
+      return { ok: true, user: this.user };
+    }
+    return { ok: false, status: r.status, error: r.data?.error || 'No se pudo iniciar sesión.' };
+  }
+
+  /** Cierra la sesión en este navegador. */
+  logout() {
+    this.#setToken('');
+    this.user = null;
+    this.items = [];
+    this.loadPromise = null;
+  }
+
+  async changePassword(current, password) {
+    const r = await this.#request('POST', 'api/me/password', { body: { current, password }, auth: true });
+    if (r.ok && r.data?.token) {
+      this.#setToken(r.data.token);
+      return { ok: true };
+    }
+    return { ok: false, status: r.status, error: r.data?.error || 'No se pudo cambiar la contraseña.' };
+  }
+
+  async listUsers() {
+    const r = await this.#request('GET', 'api/users', { auth: true });
+    return r.ok && Array.isArray(r.data?.users)
+      ? { ok: true, users: r.data.users }
+      : { ok: false, status: r.status, error: r.data?.error || 'No se pudo leer la lista.' };
+  }
+
+  async createUser(username, password, role) {
+    const r = await this.#request('POST', 'api/users', { body: { username, password, role }, auth: true });
+    return r.ok ? { ok: true, user: r.data?.user } : { ok: false, status: r.status, error: r.data?.error || 'No se pudo crear el usuario.' };
+  }
+
+  async deleteUser(id) {
+    const r = await this.#request('DELETE', `api/users/${encodeURIComponent(id)}`, { auth: true });
+    return { ok: r.ok, status: r.status, error: r.data?.error };
+  }
+
+  async resetPassword(id, password) {
+    const r = await this.#request('POST', `api/users/${encodeURIComponent(id)}/password`, { body: { password }, auth: true });
+    return { ok: r.ok, status: r.status, error: r.data?.error };
   }
 }
 
 const api = new ApiClient();
     Object.assign(exports, { api });
+  };
+  __modules["js/accounts.js"] = function (module, exports, __require) {
+/**
+ * Pantallas de cuentas: iniciar sesión, crear cuenta, cambiar contraseña y gestión de
+ * usuarios (solo administrador). Usa el cuadro de diálogo común, así que se maneja con
+ * mando, teclado y mouse.
+ */
+const { api } = __require("js/api.js");
+const { toast } = __require("js/ui.js");
+
+const ROLE_LABEL = { admin: 'Administrador', user: 'Usuario' };
+const roleLabel = (role) => ROLE_LABEL[role] ?? role;
+
+class Accounts {
+  /** @param {{dialog:import('./dialog.js').Dialog, onSessionChange:(kind:'login'|'logout'|'password')=>void,
+   *   onUsersChanged?:()=>void}} opts */
+  constructor({ dialog, onSessionChange, onUsersChanged }) {
+    this.dialog = dialog;
+    this.onSessionChange = onSessionChange;
+    this.onUsersChanged = onUsersChanged ?? (() => {});
+  }
+
+  /** Pantalla de acceso: no se puede cerrar hasta entrar. */
+  showLogin() {
+    this.dialog.open({
+      title: 'Iniciar sesión',
+      hint: 'Entra con tu usuario y contraseña de WebBox OS.',
+      locked: true,
+      fields: [
+        { key: 'username', label: 'Usuario', placeholder: 'tu usuario' },
+        { key: 'password', label: 'Contraseña', type: 'password', placeholder: '••••••' },
+      ],
+      submitLabel: 'Entrar',
+      secondary: api.registerAllowed ? { label: 'Crear cuenta', run: () => this.showRegister() } : undefined,
+      onSubmit: async (v) => {
+        if (!v.username || !v.password) return 'Escribe tu usuario y tu contraseña.';
+        const r = await api.login(v.username, v.password);
+        if (!r.ok) return r.error;
+        toast(`Hola, ${r.user.username}`);
+        this.onSessionChange('login');
+        return null;
+      },
+    });
+  }
+
+  showRegister() {
+    this.dialog.open({
+      title: 'Crear cuenta',
+      hint: 'Usuario de 3 a 32 caracteres (letras, números, punto, guion). Contraseña de al menos 6.',
+      locked: true,
+      fields: [
+        { key: 'username', label: 'Usuario' },
+        { key: 'password', label: 'Contraseña', type: 'password' },
+        { key: 'again', label: 'Repite la contraseña', type: 'password' },
+      ],
+      submitLabel: 'Crear cuenta',
+      secondary: { label: 'Ya tengo cuenta', run: () => this.showLogin() },
+      onSubmit: async (v) => {
+        if (v.password !== v.again) return 'Las contraseñas no coinciden.';
+        const r = await api.register(v.username, v.password);
+        if (!r.ok) return r.error;
+        toast(`Cuenta creada. Hola, ${r.user.username}`);
+        this.onSessionChange('login');
+        return null;
+      },
+    });
+  }
+
+  logout() {
+    api.logout();
+    toast('Sesión cerrada');
+    this.onSessionChange('logout');
+    if (api.needsLogin) this.showLogin();
+  }
+
+  changePassword() {
+    this.dialog.open({
+      title: 'Cambiar contraseña',
+      hint: 'Mínimo 6 caracteres. Las demás sesiones de tu cuenta se cerrarán.',
+      fields: [
+        { key: 'current', label: 'Contraseña actual', type: 'password' },
+        { key: 'password', label: 'Contraseña nueva', type: 'password' },
+        { key: 'again', label: 'Repite la nueva', type: 'password' },
+      ],
+      submitLabel: 'Cambiar',
+      onSubmit: async (v) => {
+        if (!v.current) return 'Escribe tu contraseña actual.';
+        if (v.password !== v.again) return 'Las contraseñas nuevas no coinciden.';
+        const r = await api.changePassword(v.current, v.password);
+        if (!r.ok) return r.error;
+        toast('Contraseña cambiada');
+        this.onSessionChange('password');
+        return null;
+      },
+    });
+  }
+
+  // ------------------------------------------------- solo administrador
+
+  createUser() {
+    this.dialog.open({
+      title: 'Crear usuario',
+      hint: 'En "Rol" escribe "usuario" (solo ve y reproduce) o "admin" (agrega contenido y gestiona usuarios).',
+      fields: [
+        { key: 'username', label: 'Usuario' },
+        { key: 'password', label: 'Contraseña (mínimo 6)', type: 'password' },
+        { key: 'role', label: 'Rol', value: 'usuario', placeholder: 'usuario o admin' },
+      ],
+      submitLabel: 'Crear',
+      onSubmit: async (v) => {
+        const word = v.role.toLowerCase();
+        let role = 'user';
+        if (['admin', 'administrador'].includes(word)) role = 'admin';
+        else if (word && !['usuario', 'user'].includes(word)) return 'El rol debe ser "usuario" o "admin".';
+        const r = await api.createUser(v.username, v.password, role);
+        if (!r.ok) return r.error;
+        toast(`Usuario creado: ${r.user?.username ?? v.username}`);
+        this.onUsersChanged();
+        return null;
+      },
+    });
+  }
+
+  /** Restablecer la contraseña de un usuario o eliminarlo. */
+  manageUser(user) {
+    this.dialog.open({
+      title: `${user.username} · ${roleLabel(user.role)}`,
+      hint: 'Escribe una contraseña nueva para restablecerla, o elimina la cuenta.',
+      fields: [{ key: 'password', label: 'Contraseña nueva (mínimo 6)', type: 'password' }],
+      submitLabel: 'Restablecer contraseña',
+      secondary: { label: 'Eliminar usuario', run: () => this.#confirmDelete(user) },
+      onSubmit: async (v) => {
+        if (!v.password) return 'Escribe la contraseña nueva.';
+        const r = await api.resetPassword(user.id, v.password);
+        if (!r.ok) return r.error || 'No se pudo restablecer.';
+        toast(`Contraseña restablecida: ${user.username}`);
+        return null;
+      },
+    });
+  }
+
+  #confirmDelete(user) {
+    this.dialog.open({
+      title: `¿Eliminar a ${user.username}?`,
+      hint: 'Se borra su cuenta y su sesión deja de valer al instante. No se puede deshacer.',
+      fields: [],
+      submitLabel: 'Sí, eliminar',
+      secondary: { label: 'No, volver', run: () => this.manageUser(user) },
+      onSubmit: async () => {
+        const r = await api.deleteUser(user.id);
+        if (!r.ok) return r.error || 'No se pudo eliminar.';
+        toast(`Usuario eliminado: ${user.username}`);
+        this.onUsersChanged();
+        return null;
+      },
+    });
+  }
+}
+    Object.assign(exports, { roleLabel, Accounts });
+  };
+  __modules["js/data/fonts.js"] = function (module, exports, __require) {
+/**
+ * Fuentes de letra disponibles en Configuración > Fuente.
+ *
+ * Las que traen `google` se descargan de Google Fonts solo cuando se eligen (o al abrir la
+ * pestaña Fuente para verlas). Sin Internet se usa la alternativa de `stack` y todo sigue
+ * funcionando. "Predeterminada" y "Sistema" no descargan nada.
+ */
+const FONT_GROUPS = [
+  { id: 'base', label: 'Lectura cómoda' },
+  { id: 'carta', label: 'Letra de carta (caligráficas y manuscritas)' },
+  { id: 'elegante', label: 'Elegantes con serifa' },
+  { id: 'otras', label: 'Otras' },
+];
+
+const sans = 'system-ui, "Segoe UI", Roboto, sans-serif';
+const serif = 'Georgia, "Times New Roman", serif';
+const script = '"Segoe Script", "Brush Script MT", cursive';
+
+const FONTS = [
+  { id: 'inter', group: 'base', name: 'Predeterminada', stack: `Inter, "Segoe UI", Roboto, "Helvetica Neue", ${sans}` },
+  { id: 'system', group: 'base', name: 'Sistema', stack: sans },
+  { id: 'poppins', group: 'base', name: 'Poppins', google: 'Poppins:wght@400;600;700', stack: `Poppins, ${sans}` },
+  { id: 'nunito', group: 'base', name: 'Nunito (redondeada)', google: 'Nunito:wght@400;600;800', stack: `Nunito, ${sans}` },
+  { id: 'montserrat', group: 'base', name: 'Montserrat', google: 'Montserrat:wght@400;600;700', stack: `Montserrat, ${sans}` },
+  { id: 'atkinson', group: 'base', name: 'Atkinson (muy legible)', google: 'Atkinson+Hyperlegible:wght@400;700', stack: `"Atkinson Hyperlegible", ${sans}` },
+
+  { id: 'dancing', group: 'carta', name: 'Dancing Script', google: 'Dancing+Script:wght@400;700', stack: `"Dancing Script", ${script}` },
+  { id: 'greatvibes', group: 'carta', name: 'Great Vibes', google: 'Great+Vibes', stack: `"Great Vibes", ${script}` },
+  { id: 'parisienne', group: 'carta', name: 'Parisienne', google: 'Parisienne', stack: `Parisienne, ${script}` },
+  { id: 'allura', group: 'carta', name: 'Allura', google: 'Allura', stack: `Allura, ${script}` },
+  { id: 'alexbrush', group: 'carta', name: 'Alex Brush', google: 'Alex+Brush', stack: `"Alex Brush", ${script}` },
+  { id: 'sacramento', group: 'carta', name: 'Sacramento', google: 'Sacramento', stack: `Sacramento, ${script}` },
+  { id: 'satisfy', group: 'carta', name: 'Satisfy', google: 'Satisfy', stack: `Satisfy, ${script}` },
+  { id: 'pacifico', group: 'carta', name: 'Pacifico', google: 'Pacifico', stack: `Pacifico, ${script}` },
+  { id: 'caveat', group: 'carta', name: 'Caveat (a mano)', google: 'Caveat:wght@400;700', stack: `Caveat, ${script}` },
+  { id: 'homemade', group: 'carta', name: 'Homemade Apple (pluma)', google: 'Homemade+Apple', stack: `"Homemade Apple", ${script}` },
+
+  { id: 'playfair', group: 'elegante', name: 'Playfair Display', google: 'Playfair+Display:wght@400;700', stack: `"Playfair Display", ${serif}` },
+  { id: 'cormorant', group: 'elegante', name: 'Cormorant Garamond', google: 'Cormorant+Garamond:wght@400;600;700', stack: `"Cormorant Garamond", ${serif}` },
+  { id: 'cinzel', group: 'elegante', name: 'Cinzel (romana)', google: 'Cinzel:wght@400;700', stack: `Cinzel, ${serif}` },
+  { id: 'lora', group: 'elegante', name: 'Lora', google: 'Lora:wght@400;600;700', stack: `Lora, ${serif}` },
+  { id: 'georgia', group: 'elegante', name: 'Georgia (sistema)', stack: serif },
+
+  { id: 'lobster', group: 'otras', name: 'Lobster', google: 'Lobster', stack: `Lobster, ${script}` },
+  { id: 'bebas', group: 'otras', name: 'Bebas Neue (cine)', google: 'Bebas+Neue', stack: `"Bebas Neue", Impact, ${sans}` },
+  { id: 'jetbrains', group: 'otras', name: 'JetBrains Mono', google: 'JetBrains+Mono:wght@400;700', stack: `"JetBrains Mono", Consolas, monospace` },
+];
+
+const FONT_BY_ID = new Map(FONTS.map((f) => [f.id, f]));
+const DEFAULT_FONT = 'inter';
+
+/** Fuente por id; si no existe, la predeterminada. */
+const fontById = (id) => FONT_BY_ID.get(id) ?? FONT_BY_ID.get(DEFAULT_FONT);
+
+/** URL de Google Fonts para un conjunto de fuentes (null si ninguna la necesita). */
+function googleFontsUrl(fonts) {
+  const families = [...new Set(fonts.map((f) => f?.google).filter(Boolean))];
+  if (!families.length) return null;
+  return `https://fonts.googleapis.com/css2?${families.map((f) => `family=${f}`).join('&')}&display=swap`;
+}
+
+const loaded = new Set();
+
+/** Inserta (una sola vez por URL) la hoja de estilos de Google Fonts. Sin red no pasa nada. */
+function loadFonts(fonts) {
+  const url = googleFontsUrl(fonts);
+  if (!url || loaded.has(url) || typeof document === 'undefined') return;
+  loaded.add(url);
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = url;
+  link.dataset.webboxFont = '1';
+  document.head.appendChild(link);
+}
+    Object.assign(exports, { FONT_GROUPS, FONTS, FONT_BY_ID, DEFAULT_FONT, fontById, googleFontsUrl, loadFonts });
   };
   __modules["js/settings.js"] = function (module, exports, __require) {
 /**
@@ -1529,6 +2379,8 @@ const { BACKGROUNDS } = __require("js/data/apps.js");
 const { listBackgrounds, addBackground, deleteBackground, customValue } = __require("js/backgroundStore.js");
 const { DOUBLE_PRESS_MS } = __require("js/launcher.js");
 const { api } = __require("js/api.js");
+const { roleLabel } = __require("js/accounts.js");
+const { FONTS, FONT_GROUPS, fontById, loadFonts } = __require("js/data/fonts.js");
 const { esc, toast } = __require("js/ui.js");
 
 const TABS = [
@@ -1538,6 +2390,9 @@ const TABS = [
   { id: 'navigation', label: 'Navegación', icon: 'compass' },
   { id: 'background', label: 'Fondo', icon: 'photo' },
   { id: 'display', label: 'Pantalla', icon: 'sun' },
+  { id: 'fonts', label: 'Fuente', icon: 'book' },
+  { id: 'account', label: 'Cuenta', icon: 'star', when: () => api.online },
+  { id: 'users', label: 'Usuarios', icon: 'gamepad', when: () => api.isAdmin },
   { id: 'server', label: 'Servidor', icon: 'globe' },
 ];
 
@@ -1578,12 +2433,15 @@ class SettingsScreen {
    * @param {{root:HTMLElement, focus:import('./core/focus.js').FocusManager,
    *          gamepad:import('./input/gamepad.js').GamepadManager}} opts
    */
-  constructor({ root, focus, gamepad, onBackgroundMenu, server }) {
+  constructor({ root, focus, gamepad, onBackgroundMenu, server, accounts }) {
     this.root = root;
     this.focus = focus;
     this.gamepad = gamepad;
     this.onBackgroundMenu = onBackgroundMenu;
-    this.server = server; // { onSetKey, onRetry, onUpload }
+    this.server = server; // { onRetry, onUpload }
+    this.accounts = accounts; // js/accounts.js
+    this.users = null; // lista cargada (pestaña Usuarios)
+    this.usersError = '';
     this.pendingBg = null;
     this.active = 'device';
     this.capturing = null; // acción que se está remapeando
@@ -1676,7 +2534,7 @@ class SettingsScreen {
   // ------------------------------------------------------------- pestañas
 
   #renderTabs() {
-    this.tabsEl.innerHTML = TABS.map(
+    this.tabsEl.innerHTML = TABS.filter((t) => !t.when || t.when()).map(
       (t) => `
       <div class="tab${t.id === this.active ? ' active' : ''}" role="button" tabindex="-1"
            data-focusable data-zone="settings-tabs" data-fid="tab:${t.id}" data-tab="${t.id}">
@@ -1694,6 +2552,27 @@ class SettingsScreen {
     this.#renderPanel();
   }
 
+  /** Tras iniciar/cerrar sesión: recalcula qué pestañas existen y redibuja. */
+  refreshTabs() {
+    const visible = TABS.filter((t) => !t.when || t.when()).map((t) => t.id);
+    if (!visible.includes(this.active)) this.active = 'device';
+    this.users = null;
+    this.#renderTabs();
+    this.#renderPanel();
+  }
+
+  /** Lista de usuarios (pestaña Usuarios), cargada del servidor. */
+  async loadUsers() {
+    this.usersError = '';
+    const r = await api.listUsers();
+    if (r.ok) this.users = r.users;
+    else {
+      this.users = [];
+      this.usersError = r.error;
+    }
+    if (this.active === 'users') this.rerender(true);
+  }
+
   #renderPanel() {
     this.live.clear();
     const render = {
@@ -1703,6 +2582,9 @@ class SettingsScreen {
       navigation: () => this.#navigationHTML(),
       background: () => this.#backgroundHTML(),
       display: () => this.#displayHTML(),
+      fonts: () => this.#fontsHTML(),
+      account: () => this.#accountHTML(),
+      users: () => this.#usersHTML(),
       server: () => this.#serverHTML(),
     }[this.active];
     this.panelEl.innerHTML = render();
@@ -1710,6 +2592,8 @@ class SettingsScreen {
     if (this.active === 'test') this.#cacheLive();
     this.panelEl.scrollTop = 0;
     if (this.active === 'background') this.#loadCustomBackgroundPreview();
+    if (this.active === 'fonts') loadFonts(FONTS); // para ver cada fuente en su propio estilo
+    if (this.active === 'users' && this.users === null) this.loadUsers();
   }
 
   // ----------------------------------------------------------- bloques UI
@@ -2062,6 +2946,88 @@ class SettingsScreen {
         'Vuelve a los valores de fábrica (no borra los recientes)', 'reset')}`;
   }
 
+  // ---------------------------------------------------------------- Fuente
+
+  #fontsHTML() {
+    const current = config.get('font');
+    const titleCurrent = config.get('titleFont');
+    const tile = (f, kind, selected) => `
+      <div class="font-tile${selected ? ' selected' : ''}" role="button" tabindex="-1" data-focusable
+           data-zone="settings-panel" data-fid="font:${kind}:${f.id}" data-act="font" data-kind="${kind}" data-id="${f.id}"
+           aria-label="${esc(f.name)}" style="--tile-font:${f.stack.replace(/"/g, "'")}">
+        <span class="font-sample">Aa</span>
+        <span class="font-name">${esc(f.name)}</span>
+        <span class="font-text">Películas, música y más</span>
+        ${selected ? `<span class="tick">${icon('check')}</span>` : ''}
+      </div>`;
+    const groups = (kind, selectedId) =>
+      FONT_GROUPS.map((g) => {
+        const list = FONTS.filter((f) => f.group === g.id);
+        return `
+          <h3 class="font-group">${esc(g.label)}</h3>
+          <div class="font-grid">${list.map((f) => tile(f, kind, f.id === selectedId)).join('')}</div>`;
+      }).join('');
+    const sameTitle = titleCurrent === 'same';
+    return `
+      <h2 class="panel-title">Fuente del texto</h2>
+      <p class="panel-note">Se aplica a todo WebBox OS. Las fuentes de letra de carta se descargan al elegirlas (necesitan Internet la primera vez); sin conexión se usa una parecida del sistema. Para leer cómodo desde el sofá, combina una letra de carta en los títulos con una fuente clara para el resto.</p>
+      ${groups('text', current)}
+      <h2 class="panel-title" style="margin-top:1.6rem">Fuente de los títulos</h2>
+      <div class="font-grid">
+        <div class="font-tile${sameTitle ? ' selected' : ''}" role="button" tabindex="-1" data-focusable
+             data-zone="settings-panel" data-fid="font:title:same" data-act="font" data-kind="title" data-id="same">
+          <span class="font-sample">=</span><span class="font-name">La misma del texto</span>
+          <span class="font-text">Títulos como el resto</span>
+          ${sameTitle ? `<span class="tick">${icon('check')}</span>` : ''}
+        </div>
+      </div>
+      ${groups('title', titleCurrent)}
+      ${this.#action('font-reset', 'font:reset', 'Restablecer fuentes', 'Vuelve a la fuente predeterminada', 'reset')}`;
+  }
+
+  // ---------------------------------------------------------------- Cuenta
+
+  #accountHTML() {
+    const user = api.user;
+    const rows = [
+      ['Servidor', api.online ? 'Conectado' : 'Sin conexión'],
+      ['Sesión', user ? `${user.username} · ${roleLabel(user.role)}` : 'Sin iniciar'],
+      ['Permisos', user ? (user.role === 'admin' ? 'Agrega y elimina contenido, gestiona usuarios' : 'Ve y reproduce el contenido') : '—'],
+    ];
+    if (!api.online) {
+      return '<h2 class="panel-title">Cuenta</h2><p class="panel-note">No hay conexión con el servidor. Abre WebBox OS desde el servidor (npm start) para usar cuentas.</p>';
+    }
+    return `
+      <h2 class="panel-title">Cuenta</h2>
+      <dl class="info-list" style="margin-bottom:1.2rem">
+        ${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}
+      </dl>
+      ${user
+        ? `${this.#action('account-password', 'account:password', 'Cambiar contraseña', 'Necesitas tu contraseña actual', 'plus')}
+           ${this.#action('account-logout', 'account:logout', 'Cerrar sesión', 'Salir de esta cuenta en este navegador', 'back')}`
+        : this.#action('account-login', 'account:login', 'Iniciar sesión', 'Entra con tu usuario y contraseña', 'plus')}`;
+  }
+
+  // -------------------------------------------------------------- Usuarios
+
+  #usersHTML() {
+    const create = this.#action('user-create', 'user:create', 'Crear usuario', 'Usuario normal o administrador', 'plus');
+    if (this.users === null) return `<h2 class="panel-title">Usuarios</h2>${create}<p class="panel-note">Cargando…</p>`;
+    const rows = this.users
+      .map((u) => this.#action(
+        'user-manage', `user:${u.id}`,
+        `${u.username}${api.user?.id === u.id ? ' (tú)' : ''}`,
+        `${roleLabel(u.role)} · pulsa para restablecer su contraseña o eliminarlo`,
+        u.role === 'admin' ? 'star' : 'gamepad',
+        `data-uid="${u.id}"`,
+      )).join('');
+    return `
+      <h2 class="panel-title">Usuarios</h2>
+      <p class="panel-note">El administrador agrega y elimina películas, música y videos, y gestiona cuentas. Los usuarios solo ven y reproducen.</p>
+      ${this.usersError ? `<p class="panel-note">${esc(this.usersError)}</p>` : ''}
+      ${create}${rows}`;
+  }
+
   // ------------------------------------------------------------- Servidor
 
   #serverHTML() {
@@ -2072,7 +3038,7 @@ class SettingsScreen {
       ['Servidor', online ? 'Conectado' : 'Sin conexión (modo local)'],
       ['Base de datos', online ? storeName : '—'],
       ['En el catálogo', online ? `${counts.youtube} videos · ${counts.music} canciones · ${counts.movies} películas · ${counts.series} capítulos de series` : '—'],
-      ['Clave de administrador', api.hasKey() ? 'Guardada en este navegador' : 'No guardada (solo lectura)'],
+      ['Sesión', api.user ? `${api.user.username} · ${roleLabel(api.user.role)}` : (api.loginRequired ? 'Sin iniciar' : 'Acceso abierto')],
     ];
     return `
       <h2 class="panel-title">Servidor y base de datos</h2>
@@ -2080,16 +3046,14 @@ class SettingsScreen {
         <span class="dot"></span>
         <div><h3>${online ? 'Conectado al catálogo compartido' : 'Sin conexión con el servidor'}</h3>
         <p>${online
-          ? 'YouTube, Música y Películas muestran lo que hay en la base de datos. Todos ven lo mismo; solo quien tiene la clave agrega o elimina.'
+          ? 'YouTube, Música y Películas muestran lo que hay en la base de datos. Todos ven lo mismo; solo el administrador agrega o elimina.'
           : 'Se usa solo el almacenamiento de este navegador. Abre WebBox OS desde el servidor (npm start) para usar la base de datos.'}</p></div>
       </div>
       <dl class="info-list" style="margin-bottom:1.2rem">
         ${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}
       </dl>
-      ${this.#action('server-key', 'server:key', 'Clave de administrador', 'Necesaria para agregar o eliminar elementos del catálogo compartido', 'plus')}
-      ${api.hasKey() ? this.#action('server-forget', 'server:forget', 'Quitar la clave de este navegador', 'Volverás a ser solo lector', 'trash') : ''}
       ${this.#action('server-retry', 'server:retry', 'Reintentar conexión', 'Vuelve a consultar el servidor', 'reset')}
-      ${online ? this.#action('server-upload', 'server:upload', 'Subir lo guardado en este navegador', 'Envía al servidor lo que agregaste antes solo aquí (requiere la clave)', 'plus') : ''}`;
+      ${online && api.isAdmin ? this.#action('server-upload', 'server:upload', 'Subir lo guardado en este navegador', 'Envía al servidor lo que agregaste antes solo aquí (solo administrador)', 'plus') : ''}`;
   }
 
   async #serverRetry() {
@@ -2100,8 +3064,8 @@ class SettingsScreen {
   }
 
   async #serverUpload() {
-    if (!api.hasKey()) {
-      toast('Primero escribe la clave de administrador');
+    if (!api.isAdmin) {
+      toast('Solo el administrador puede subir contenido al servidor');
       return;
     }
     toast('Subiendo…');
@@ -2111,7 +3075,7 @@ class SettingsScreen {
     if (r.existing) parts.push(`${r.existing} ya estaban`);
     if (r.skipped) parts.push(`${r.skipped} son archivos del equipo (no se suben)`);
     if (r.failed) parts.push(`${r.failed} con error`);
-    if (r.stopped) parts.push('se detuvo: clave incorrecta o servidor sin clave');
+    if (r.stopped) parts.push('se detuvo: sin permiso de administrador');
     toast(parts.join(' · '), 5000);
     this.rerender(true);
   }
@@ -2166,14 +3130,34 @@ class SettingsScreen {
         }
         break;
       }
-      case 'server-key':
-        this.server?.onSetKey?.();
-        break;
-      case 'server-forget':
-        api.clearKey();
-        toast('Clave quitada de este navegador');
+      case 'font': {
+        config.set(el.dataset.kind === 'title' ? 'titleFont' : 'font', el.dataset.id);
         this.rerender(true);
         break;
+      }
+      case 'font-reset':
+        config.set('font', 'inter');
+        config.set('titleFont', 'same');
+        toast('Fuentes restablecidas');
+        this.rerender(true);
+        break;
+      case 'account-login':
+        this.accounts?.showLogin();
+        break;
+      case 'account-logout':
+        this.accounts?.logout();
+        break;
+      case 'account-password':
+        this.accounts?.changePassword();
+        break;
+      case 'user-create':
+        this.accounts?.createUser();
+        break;
+      case 'user-manage': {
+        const user = this.users?.find((u) => String(u.id) === el.dataset.uid);
+        if (user) this.accounts?.manageUser(user);
+        break;
+      }
       case 'server-retry':
         this.#serverRetry();
         break;
@@ -2787,6 +3771,445 @@ class LibraryScreen {
 }
     Object.assign(exports, { LibraryScreen });
   };
+  __modules["js/core/appDoc.js"] = function (module, exports, __require) {
+/**
+ * Construye el documento (srcdoc) con el que se ejecuta una app instalada.
+ *
+ * La app corre en un iframe SIN "allow-same-origin" (origen opaco): no puede leer el
+ * localStorage, IndexedDB, cookies ni la sesión de WebBox OS. Ese iframe tampoco puede pedir
+ * archivos "relativos" a un servidor ni cargar URL blob: de la página principal, así que el
+ * HTML se reescribe: los CSS se incrustan, y scripts, imágenes, audio y video apuntan a URL
+ * data: creadas a partir de los archivos del paquete. También se inyecta un pequeño script
+ * (shim) que:
+ *   - hace que fetch/XMLHttpRequest/Image con rutas relativas encuentren los archivos del paquete
+ *     (los grandes se piden a WebBox OS por mensajes, sin cargarlos todos en memoria),
+ *   - ofrece localStorage/sessionStorage (guardado por app) y la API window.WebBox.
+ *
+ * Límites conocidos: los módulos ES (<script type="module"> con import relativos) y las páginas
+ * HTML enlazadas entre sí no funcionan (la app debe ser una sola página; se puede empaquetar con
+ * Vite, esbuild o similar); un archivo de más de 8 MB enlazado directamente desde el HTML
+ * (por ejemplo un video) no se carga: hay que pedirlo con fetch().
+ */
+
+/** Tope por archivo y total para convertir a URL data: */
+const INLINE_LIMITS = { file: 8 * 1024 * 1024, total: 48 * 1024 * 1024, dynamic: 512 * 1024 };
+
+const dirOf = (path) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
+
+/** Ruta dentro del paquete a la que apunta `ref` (relativa a `fromDir`), o null si es externa/inválida. */
+function resolveRef(ref, fromDir = '') {
+  const raw = String(ref ?? '').trim();
+  if (!raw || raw.startsWith('#') || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(raw)) return null;
+  let path = raw.split('#')[0].split('?')[0];
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    /* se usa tal cual */
+  }
+  const joined = path.startsWith('/') ? path.slice(1) : fromDir ? `${fromDir}/${path}` : path;
+  const out = [];
+  for (const part of joined.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (!out.length) return null;
+      out.pop();
+    } else out.push(part);
+  }
+  return out.length ? out.join('/') : null;
+}
+
+/** Script que se inyecta al principio de la app. Se escribe en ES5 a propósito. */
+function shimSource(cfg) {
+  const json = JSON.stringify(cfg).replace(/</g, '\\u003c').replace(/\u2028|\u2029/g, '');
+  return `(function () {
+  var CFG = ${json};
+  var W = window, P = W.parent;
+  function send(m) { m.wbx = 1; try { P.postMessage(m, '*'); } catch (e) {} }
+
+  // ---- localStorage / sessionStorage (en un iframe aislado los nativos lanzan error)
+  var data = CFG.data || {}, timer = 0;
+  function persist() { if (CFG.persist && !timer) timer = setTimeout(function () { timer = 0; send({ type: 'store', values: data }); }, 400); }
+  function makeStorage(shared) {
+    var mem = shared ? data : {};
+    var api = {
+      getItem: function (k) { k = String(k); return Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null; },
+      setItem: function (k, v) { mem[String(k)] = String(v); if (shared) persist(); },
+      removeItem: function (k) { delete mem[String(k)]; if (shared) persist(); },
+      clear: function () { for (var k in mem) delete mem[k]; if (shared) persist(); },
+      key: function (i) { return Object.keys(mem)[i] || null; }
+    };
+    return new Proxy(api, {
+      get: function (t, k) { if (k === 'length') return Object.keys(mem).length; return k in t ? t[k] : t.getItem(k); },
+      set: function (t, k, v) { t.setItem(k, v); return true; },
+      deleteProperty: function (t, k) { t.removeItem(k); return true; },
+      has: function (t, k) { return k in t || t.getItem(k) !== null; },
+      ownKeys: function () { return Object.keys(mem); },
+      getOwnPropertyDescriptor: function (t, k) { return k in mem ? { value: mem[k], enumerable: true, configurable: true, writable: true } : undefined; }
+    });
+  }
+  var ls = makeStorage(true), ss = makeStorage(false);
+  try { Object.defineProperty(W, 'localStorage', { configurable: true, get: function () { return ls; } }); } catch (e) {}
+  try { Object.defineProperty(W, 'sessionStorage', { configurable: true, get: function () { return ss; } }); } catch (e) {}
+
+  // ---- archivos del paquete: fetch, XMLHttpRequest y src de Image/Audio/Video
+  var files = CFG.files || {}, all = CFG.all || {}, base = CFG.base || '';
+  function key(u) {
+    u = String(u);
+    if (/^([a-z][a-z0-9+.-]*:|\\/\\/)/i.test(u)) return null;
+    var p = u.split('#')[0].split('?')[0];
+    try { p = decodeURIComponent(p); } catch (e) {}
+    var parts = (p.charAt(0) === '/' ? p.slice(1) : (base ? base + '/' : '') + p).split('/'), out = [];
+    for (var i = 0; i < parts.length; i++) { if (!parts[i] || parts[i] === '.') continue; if (parts[i] === '..') out.pop(); else out.push(parts[i]); }
+    return out.join('/');
+  }
+  function find(u) { var k = key(u); return k && files[k] ? files[k] : null; }
+  var pending = {}, nextId = 1;
+  function request(path) {
+    return new Promise(function (resolve, reject) {
+      var id = nextId++;
+      pending[id] = { resolve: resolve, reject: reject };
+      send({ type: 'file', id: id, path: path });
+    });
+  }
+  var realFetch = W.fetch;
+  if (realFetch) W.fetch = function (input, init) {
+    if (typeof input === 'string') {
+      var k = key(input);
+      if (k && files[k]) return realFetch.call(this, files[k], init);
+      if (k && all[k]) return request(k).then(function (r) { return new Response(r.buffer, { status: 200, headers: { 'Content-Type': r.mime || 'application/octet-stream' } }); });
+    }
+    return realFetch.call(this, input, init);
+  };
+  var realOpen = W.XMLHttpRequest && W.XMLHttpRequest.prototype.open;
+  if (realOpen) W.XMLHttpRequest.prototype.open = function (method, url) { var m = find(url); var a = [].slice.call(arguments); if (m) a[1] = m; return realOpen.apply(this, a); };
+  function patchSrc(proto) {
+    var d = proto && Object.getOwnPropertyDescriptor(proto, 'src');
+    if (d && d.set) Object.defineProperty(proto, 'src', { configurable: true, enumerable: d.enumerable, get: d.get, set: function (v) { d.set.call(this, find(v) || v); } });
+  }
+  patchSrc(W.HTMLImageElement && W.HTMLImageElement.prototype);
+  patchSrc(W.HTMLMediaElement && W.HTMLMediaElement.prototype);
+  patchSrc(W.HTMLScriptElement && W.HTMLScriptElement.prototype);
+
+  // ---- API de WebBox OS para las apps
+  var inputs = [];
+  W.addEventListener('message', function (e) {
+    if (e.source !== P) return;
+    var m = e.data;
+    if (m && m.wbx === 1 && m.type === 'file' && pending[m.id]) {
+      var w = pending[m.id]; delete pending[m.id];
+      if (m.buffer) w.resolve(m); else w.reject(new TypeError('No se encontró el archivo'));
+      return;
+    }
+    if (!m || m.wbx !== 1 || m.type !== 'input') return;
+    for (var i = 0; i < inputs.length; i++) { try { inputs[i](m.action); } catch (err) {} }
+    try { W.dispatchEvent(new CustomEvent('webbox:input', { detail: { action: m.action } })); } catch (err) {}
+  });
+  W.WebBox = {
+    version: 1,
+    app: { id: CFG.id, name: CFG.name },
+    exit: function () { send({ type: 'exit' }); },
+    notify: function (text) { send({ type: 'notify', text: String(text).slice(0, 120) }); },
+    onInput: function (fn) { if (typeof fn === 'function') inputs.push(fn); },
+    storage: {
+      get: function (k) { return ls.getItem(k); },
+      set: function (k, v) { ls.setItem(k, v); },
+      remove: function (k) { ls.removeItem(k); }
+    }
+  };
+
+  // ---- Esc cierra la app (salvo que declare "input": "app" y gestione sus propias teclas)
+  if (CFG.input === 'launcher') W.addEventListener('keydown', function (e) { if (e.key === 'Escape') send({ type: 'exit' }); }, true);
+  W.addEventListener('load', function () { send({ type: 'ready' }); });
+})();`;
+}
+
+const URL_RE = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
+const IMPORT_RE = /@import\s+(?:url\(\s*)?(['"]?)([^'")\s;]+)\1\s*\)?[^;]*;/g;
+
+function toDataUrl(blob) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * @param {{app:object, files:Map<string,Blob>, data:Record<string,string>}} input
+ * @returns {Promise<{html:string, revoke:()=>void}>}
+ */
+async function buildAppDocument({ app, files, data }) {
+  const entryBlob = files.get(app.entry);
+  if (!entryBlob) throw new Error('Falta el archivo de entrada de la app.');
+
+  let budget = INLINE_LIMITS.total;
+  const cache = new Map();
+  /** URL data: del archivo (o null si no existe, es muy grande o se acabó el presupuesto). */
+  const dataUrlFor = async (path, limit = INLINE_LIMITS.file) => {
+    const blob = files.get(path);
+    if (!blob || blob.size > limit || blob.size > budget) return null;
+    if (!cache.has(path)) {
+      budget -= blob.size;
+      cache.set(path, toDataUrl(blob));
+    }
+    return cache.get(path);
+  };
+
+  const replaceAsync = async (text, regex, fn) => {
+    const parts = [];
+    let last = 0;
+    for (const m of text.matchAll(regex)) {
+      parts.push(text.slice(last, m.index), await fn(m));
+      last = m.index + m[0].length;
+    }
+    parts.push(text.slice(last));
+    return parts.join('');
+  };
+
+  const rewriteUrls = (css, dir) =>
+    replaceAsync(css, URL_RE, async (m) => {
+      const path = resolveRef(m[2], dir);
+      const url = path && (await dataUrlFor(path));
+      return url ? `url("${url}")` : m[0];
+    });
+
+  async function cssText(path, depth = 0) {
+    let css = await files.get(path).text();
+    const dir = dirOf(path);
+    if (depth < 3) {
+      css = await replaceAsync(css, IMPORT_RE, async (m) => {
+        const target = resolveRef(m[2], dir);
+        return target && files.has(target) ? cssText(target, depth + 1) : m[0];
+      });
+    }
+    return rewriteUrls(css, dir);
+  }
+
+  const doc = new DOMParser().parseFromString(await entryBlob.text(), 'text/html');
+  const entryDir = dirOf(app.entry);
+  const local = (ref) => {
+    const path = resolveRef(ref, entryDir);
+    return path && files.has(path) ? path : null;
+  };
+
+  // Hojas de estilo: se incrustan (así sus url() también quedan resueltas).
+  for (const link of [...doc.querySelectorAll('link[href]')]) {
+    const path = local(link.getAttribute('href'));
+    if (!path) continue;
+    if ((link.getAttribute('rel') || '').toLowerCase().includes('stylesheet')) {
+      const style = doc.createElement('style');
+      if (link.getAttribute('media')) style.setAttribute('media', link.getAttribute('media'));
+      style.textContent = await cssText(path);
+      link.replaceWith(style);
+    } else {
+      const url = await dataUrlFor(path);
+      if (url) link.setAttribute('href', url);
+    }
+  }
+  for (const el of doc.querySelectorAll('[src]')) {
+    if (el.tagName === 'IFRAME') continue;
+    const path = local(el.getAttribute('src'));
+    const url = path && (await dataUrlFor(path));
+    if (url) el.setAttribute('src', url);
+  }
+  for (const el of doc.querySelectorAll('video[poster]')) {
+    const path = local(el.getAttribute('poster'));
+    const url = path && (await dataUrlFor(path));
+    if (url) el.setAttribute('poster', url);
+  }
+  for (const el of doc.querySelectorAll('[srcset]')) {
+    const list = [];
+    for (const item of el.getAttribute('srcset').split(',')) {
+      const [ref, ...rest] = item.trim().split(/\s+/);
+      const path = local(ref);
+      list.push([(path && (await dataUrlFor(path))) || ref, ...rest].join(' '));
+    }
+    el.setAttribute('srcset', list.join(', '));
+  }
+  for (const style of doc.querySelectorAll('style')) style.textContent = await rewriteUrls(style.textContent, entryDir);
+  for (const el of doc.querySelectorAll('[style]')) el.setAttribute('style', await rewriteUrls(el.getAttribute('style'), entryDir));
+
+  // Archivos pequeños disponibles de inmediato para fetch/Image; el resto, por mensajes.
+  const fileMap = {};
+  const all = {};
+  for (const [path, blob] of files) {
+    all[path] = 1;
+    if (blob.size <= INLINE_LIMITS.dynamic) {
+      const url = await dataUrlFor(path, INLINE_LIMITS.dynamic);
+      if (url) fileMap[path] = url;
+    }
+  }
+  const shim = doc.createElement('script');
+  shim.textContent = shimSource({
+    id: app.id,
+    name: app.name,
+    input: app.input,
+    persist: app.permissions.includes('storage'),
+    data: data ?? {},
+    base: entryDir,
+    files: fileMap,
+    all,
+  });
+  doc.head.insertBefore(shim, doc.head.firstChild);
+
+  return { html: `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`, revoke: () => {} };
+}
+    Object.assign(exports, { INLINE_LIMITS, resolveRef, shimSource, buildAppDocument });
+  };
+  __modules["js/appHost.js"] = function (module, exports, __require) {
+/**
+ * Ejecuta una app instalada a pantalla completa dentro de WebBox OS, en un iframe aislado.
+ *
+ * Salir: Atrás/Esc (o Inicio) cierran la app. Si la app declara "input": "app" (juegos que usan
+ * esos botones), Atrás/Esc se reenvían a la app y se sale pulsando Inicio dos veces, con
+ * WebBox.exit() desde la app, o con el botón "Salir" de la esquina (mouse).
+ */
+const { bus } = __require("js/core/events.js");
+const { readAppFiles, loadAppData, saveAppData } = __require("js/appRuntime.js");
+const { buildAppDocument } = __require("js/core/appDoc.js");
+const { safePath } = __require("js/core/zip.js");
+const { esc, toast } = __require("js/ui.js");
+
+const HOME_AGAIN_MS = 1500;
+
+class AppHost {
+  /** @param {{el:HTMLElement, focus:import('./core/focus.js').FocusManager}} opts */
+  constructor({ el, focus }) {
+    this.el = el;
+    this.focus = focus;
+    this.isOpen = false;
+    this.app = null;
+    this.revoke = null;
+    this.returnFid = null;
+    this.lastHome = 0;
+    this.token = 0;
+    this.files = null; // Map ruta -> Blob de la app abierta
+
+    el.innerHTML = `
+      <iframe class="apphost-frame" title="Aplicación"
+        sandbox="allow-scripts allow-forms allow-pointer-lock allow-modals allow-downloads"
+        allow="gamepad; autoplay; fullscreen; clipboard-write" referrerpolicy="no-referrer"></iframe>
+      <div class="apphost-loading" data-loading>Cargando…</div>
+      <div class="apphost-exit" role="button" data-act="app-exit" title="Salir de la app">Salir</div>`;
+    this.frame = el.querySelector('iframe');
+    this.loading = el.querySelector('[data-loading]');
+
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-act="app-exit"]')) this.close();
+    });
+    this.frame.addEventListener('load', () => {
+      if (!this.isOpen || !this.frame.srcdoc) return;
+      this.loading.hidden = true;
+      this.frame.focus();
+    });
+
+    // Mensajes de la app (solo se aceptan los de nuestro iframe)
+    window.addEventListener('message', (e) => this.#onMessage(e));
+    // Mando/teclado hacia la app que lo pida
+    bus.on('action', ({ action }) => {
+      if (!this.isOpen) return;
+      if (this.app.input === 'app' || this.app.permissions.includes('input')) {
+        this.frame.contentWindow?.postMessage({ wbx: 1, type: 'input', action }, '*');
+      }
+    });
+  }
+
+  async open(app) {
+    if (this.isOpen) return;
+    const token = ++this.token;
+    this.app = app;
+    this.isOpen = true;
+    this.returnFid = this.focus.current?.dataset.fid ?? null;
+    this.loading.textContent = `Abriendo ${app.name}…`;
+    this.loading.hidden = false;
+    this.el.hidden = false;
+    this.focus.clear();
+    this.focus.pushScope(this.el); // sin elementos enfocables: el mando no mueve nada detrás
+    document.body.classList.add('app-open');
+
+    try {
+      const [files, data] = await Promise.all([readAppFiles(app.id), loadAppData(app.id)]);
+      if (token !== this.token) return;
+      this.files = files;
+      const built = await buildAppDocument({ app, files, data });
+      if (token !== this.token) {
+        built.revoke();
+        return;
+      }
+      this.revoke = built.revoke;
+      this.frame.srcdoc = built.html;
+    } catch (err) {
+      if (token !== this.token) return;
+      this.loading.innerHTML = `No se pudo abrir la app: ${esc(err?.message || 'error desconocido')}<br><small>Atrás para volver</small>`;
+    }
+  }
+
+  close({ restore = true } = {}) {
+    if (!this.isOpen) return;
+    this.token += 1;
+    this.isOpen = false;
+    this.frame.removeAttribute('srcdoc');
+    this.frame.src = 'about:blank';
+    this.revoke?.();
+    this.revoke = null;
+    this.app = null;
+    this.files = null;
+    this.el.hidden = true;
+    document.body.classList.remove('app-open');
+    this.focus.popScope();
+    if (restore) this.focus.focusByFid(this.returnFid);
+  }
+
+  /**
+   * Atrás o Inicio mientras hay una app abierta. Devuelve true si se encargó de la pulsación.
+   * @param {'back'|'home'} kind
+   */
+  requestExit(kind) {
+    if (!this.isOpen) return false;
+    if (this.app.input !== 'app' || !this.frame.srcdoc) {
+      this.close();
+      return true;
+    }
+    if (kind === 'home') {
+      const now = Date.now();
+      if (now - this.lastHome < HOME_AGAIN_MS) this.close();
+      else {
+        this.lastHome = now;
+        toast('Pulsa Inicio otra vez para salir de la app');
+      }
+    }
+    return true; // "back" ya se reenvió a la app
+  }
+
+  /** La app pide un archivo de su paquete (fetch de algo grande): se le entrega por mensaje. */
+  async #sendFile(msg) {
+    const path = safePath(msg.path);
+    const blob = path && this.files?.get(path);
+    const frame = this.frame.contentWindow;
+    if (!blob) {
+      frame?.postMessage({ wbx: 1, type: 'file', id: msg.id, buffer: null }, '*');
+      return;
+    }
+    const buffer = await blob.arrayBuffer();
+    frame?.postMessage({ wbx: 1, type: 'file', id: msg.id, buffer, mime: blob.type }, '*', [buffer]);
+  }
+
+  #onMessage(e) {
+    if (!this.isOpen || e.source !== this.frame.contentWindow) return;
+    const msg = e.data;
+    if (!msg || msg.wbx !== 1) return;
+    if (msg.type === 'file') this.#sendFile(msg);
+    else if (msg.type === 'exit') this.close();
+    else if (msg.type === 'notify' && typeof msg.text === 'string') toast(msg.text.slice(0, 120));
+    else if (msg.type === 'store' && this.app.permissions.includes('storage')) {
+      const { id } = this.app;
+      saveAppData(id, msg.values).catch((err) => toast(err?.message || 'No se pudieron guardar los datos de la app.'));
+    }
+  }
+}
+    Object.assign(exports, { AppHost });
+  };
   __modules["js/player.js"] = function (module, exports, __require) {
 /**
  * Reproductor a pantalla completa para YouTube (IFrame API oficial, con controles
@@ -3315,7 +4738,10 @@ class Dialog {
       if (e.key === 'Enter') {
         e.preventDefault();
         e.target.blur();
-        this.focus.move('down');
+        // En el último campo, Enter guarda; en los demás, pasa al siguiente.
+        const fields = this.el.querySelectorAll('.field');
+        if (e.target.closest('.field') === fields[fields.length - 1]) this.el.querySelector('[data-act="dlg-save"]')?.click();
+        else this.focus.move('down');
       } else if (e.key === 'Escape') {
         e.preventDefault();
         e.target.blur();
@@ -3323,9 +4749,15 @@ class Dialog {
     });
   }
 
+  get locked() {
+    return Boolean(this.isOpen && this.spec?.locked);
+  }
+
   /**
    * @param {{title:string, hint?:string, fields:{key:string,label:string,type?:'text'|'password',placeholder?:string,value?:string}[],
-   *   submitLabel?:string, onSubmit:(values:object)=>Promise<string|null>|string|null}} spec
+   *   submitLabel?:string, onSubmit:(values:object)=>Promise<string|null>|string|null,
+   *   locked?:boolean, secondary?:{label:string, run:()=>void}}} spec
+   * `locked`: no se puede cerrar con Atrás/Inicio (pantalla de acceso); `secondary` reemplaza a Cancelar.
    */
   open(spec) {
     if (this.isOpen) return;
@@ -3350,9 +4782,16 @@ class Dialog {
         <p class="dialog-error" data-error hidden></p>
         <div class="dialog-actions">
           <div class="btn" role="button" tabindex="-1" data-focusable data-zone="dialog" data-fid="dlg:save" data-act="dlg-save">${esc(spec.submitLabel ?? 'Guardar')}</div>
-          <div class="btn" role="button" tabindex="-1" data-focusable data-zone="dialog" data-fid="dlg:cancel" data-act="dlg-cancel">Cancelar</div>
+          ${
+            spec.secondary
+              ? `<div class="btn" role="button" tabindex="-1" data-focusable data-zone="dialog" data-fid="dlg:secondary" data-act="dlg-secondary">${esc(spec.secondary.label)}</div>`
+              : spec.locked
+                ? ''
+                : '<div class="btn" role="button" tabindex="-1" data-focusable data-zone="dialog" data-fid="dlg:cancel" data-act="dlg-cancel">Cancelar</div>'
+          }
         </div>
       </div>`;
+    this.el.classList.toggle('is-locked', Boolean(spec.locked)); // pantalla de acceso: fondo opaco
     this.el.hidden = false;
     this.isOpen = true;
     this.focus.clear();
@@ -3372,7 +4811,8 @@ class Dialog {
 
   values() {
     const out = {};
-    for (const input of this.el.querySelectorAll('input')) out[input.name] = input.value.trim();
+    // Las contraseñas se envían tal cual (los espacios cuentan); el resto se recorta.
+    for (const input of this.el.querySelectorAll('input')) out[input.name] = input.type === 'password' ? input.value : input.value.trim();
     return out;
   }
 
@@ -3390,6 +4830,10 @@ class Dialog {
       el.querySelector('input')?.focus();
     } else if (el.dataset.act === 'dlg-cancel') {
       this.close();
+    } else if (el.dataset.act === 'dlg-secondary') {
+      const { run } = this.spec.secondary;
+      this.close({ restore: false });
+      run();
     } else if (el.dataset.act === 'dlg-save') {
       if (this.busy) return;
       this.busy = true;
@@ -3834,12 +5278,13 @@ class FilesScreen {
    * @param {{root:HTMLElement, focus:object, dialog:object, onOpenMedia:(file:File,name:string)=>void,
    *   onAddMovie:(entry:object,name:string)=>Promise<void>}} opts
    */
-  constructor({ root, focus, dialog, onOpenMedia, onAddMovie }) {
+  constructor({ root, focus, dialog, onOpenMedia, onAddMovie, onInstallApp }) {
     this.root = root;
     this.focus = focus;
     this.dialog = dialog;
     this.onOpenMedia = onOpenMedia;
     this.onAddMovie = onAddMovie;
+    this.onInstallApp = onInstallApp;
     this.stack = [];
     this.rootDirectory = null;
     this.entries = [];
@@ -4469,6 +5914,15 @@ class FilesScreen {
     }
 
     const kind = fileType(entry.name);
+    // Un .zip o .apk se instala como aplicación web (el instalador valida el contenido).
+    if (/\.(zip|apk)$/i.test(entry.name) && this.onInstallApp) {
+      try {
+        await this.onInstallApp(await getEntryFile(entry));
+      } catch (err) {
+        toast(`No se pudo leer el archivo: ${err?.message || 'permiso denegado'}`, 4000);
+      }
+      return;
+    }
     if (!['video', 'audio', 'image'].includes(kind)) {
       toast('Este tipo de archivo no tiene un visor integrado.');
       return;
@@ -5630,6 +7084,10 @@ const { Launcher } = __require("js/launcher.js");
 const { SettingsScreen } = __require("js/settings.js");
 const { LibraryScreen } = __require("js/library.js");
 const { api } = __require("js/api.js");
+const { fontById, loadFonts } = __require("js/data/fonts.js");
+const { Accounts } = __require("js/accounts.js");
+const { AppHost } = __require("js/appHost.js");
+const { listApps, installPackage, uninstallApp, setFavorite } = __require("js/appRuntime.js");
 const { Player } = __require("js/player.js");
 const { Dialog } = __require("js/dialog.js");
 const { FilesScreen } = __require("js/files.js");
@@ -5684,12 +7142,19 @@ class WebBoxOS {
       appsEl: this.screens.apps,
       onOpen: (item) => this.openItem(item),
       onMenu: (item) => this.#openCardMenu(item),
+      onInstall: () => this.#pickAppPackage(),
       onChooseLocation: (key) => this.#chooseLocation(key),
       getLocations: () => this.mediaFolders,
     });
     this.launcher.onRestored = () => this.#enterScreen(this.current);
     this.player = new Player({ el: $('#player'), focus: this.focus });
     this.dialog = new Dialog({ el: $('#dialog'), focus: this.focus });
+    this.appHost = new AppHost({ el: $('#apphost'), focus: this.focus });
+    this.accounts = new Accounts({
+      dialog: this.dialog,
+      onSessionChange: (kind) => this.#onSessionChange(kind),
+      onUsersChanged: () => this.settings?.loadUsers(),
+    });
     this.cardMenu = new CardMenu({ el: $('#cardmenu'), focus: this.focus });
     const common = {
       onPlay: (item, lib) => this.#playLibraryItem(item, lib),
@@ -5777,6 +7242,7 @@ class WebBoxOS {
         this.player.openFile(file);
       },
       onAddMovie: (entry, name) => this.#addMovieFromFiles(entry, name),
+      onInstallApp: (file) => this.#installFile(file),
     });
     // Música: misma biblioteca de enlaces de YouTube, mostrada como carrusel de portadas.
     this.musicLib = new LibraryScreen({
@@ -5811,8 +7277,8 @@ class WebBoxOS {
       focus: this.focus,
       gamepad: this.gamepad,
       onBackgroundMenu: (spec) => this.cardMenu.open(spec),
+      accounts: this.accounts,
       server: {
-        onSetKey: () => this.#openServerKeyDialog(),
         onRetry: () => this.#refreshServer(),
         onUpload: () => this.#uploadLocalItems(),
       },
@@ -5838,6 +7304,8 @@ class WebBoxOS {
     this.keyboard.start();
 
     this.navigate('home', { enter: true });
+    this.#bootAuth();
+    this.#loadInstalledApps();
     console.info('[WebBox OS] Launcher listo. Gamepad API:', this.gamepad.supported ? 'sí' : 'no');
   }
 
@@ -5986,12 +7454,13 @@ class WebBoxOS {
   }
 
   async back() {
+    if (this.appHost.requestExit('back')) return;
     if (this.cardMenu.isOpen) {
       this.cardMenu.close();
       return;
     }
     if (this.dialog.isOpen) {
-      this.dialog.close();
+      if (!this.dialog.locked) this.dialog.close(); // la pantalla de acceso no se cierra con Atrás
       return;
     }
     if (this.player.isOpen) {
@@ -6018,7 +7487,9 @@ class WebBoxOS {
   }
 
   home() {
+    if (this.appHost.isOpen && this.appHost.requestExit('home')) return;
     if (this.cardMenu.isOpen) this.cardMenu.close({ restore: false });
+    if (this.dialog.locked) return; // sin sesión no se puede ir a ninguna parte
     if (this.dialog.isOpen) this.dialog.close({ restore: false });
     if (this.player.isOpen) this.player.close({ restore: false });
     if (this.files?.viewerOpen) this.files.closeViewer({ restore: false });
@@ -6035,6 +7506,13 @@ class WebBoxOS {
 
   openItem(item) {
     if (this.overlayOpen) return;
+    // App instalada por el usuario: se ejecuta en su propio iframe aislado.
+    if (item.installed) {
+      this.launcher.recordRecent(item.id);
+      this.music.pause();
+      this.appHost.open(item.meta);
+      return;
+    }
     // Aplicaciones reales: abren su propia pantalla en vez de la simulación.
     if (item.screen) {
       if (item.kind === 'app') this.launcher.recordRecent(item.id);
@@ -6086,6 +7564,66 @@ class WebBoxOS {
     }
   }
 
+  // --------------------------------------------------- apps instaladas
+
+  async #loadInstalledApps() {
+    try {
+      this.launcher.setInstalledApps(await listApps());
+    } catch {
+      /* IndexedDB no disponible: simplemente no hay apps instaladas */
+    }
+  }
+
+  /** Abre el selector de archivos del sistema para elegir un .zip o .apk. */
+  #pickAppPackage() {
+    if (!api.canEdit) {
+      toast('Solo el administrador puede instalar apps.');
+      return;
+    }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.zip,.apk';
+    input.addEventListener('change', () => {
+      const [file] = input.files ?? [];
+      if (file) this.#installFile(file);
+    });
+    input.click();
+  }
+
+  async #installFile(file) {
+    if (!api.canEdit) {
+      toast('Solo el administrador puede instalar apps.');
+      return;
+    }
+    if (file.size > 150 * 1024 * 1024) {
+      toast('El paquete pesa más de 150 MB: es demasiado grande para instalarlo.', 4500);
+      return;
+    }
+    toast(`Instalando ${file.name}…`);
+    try {
+      const { app, updated } = await installPackage(await file.arrayBuffer(), file.name);
+      await this.#loadInstalledApps();
+      toast(`${updated ? 'Actualizada' : 'Instalada'}: ${app.name}. La encuentras en Aplicaciones.`, 4200);
+    } catch (err) {
+      toast(`No se pudo instalar: ${err?.message || 'paquete no válido'}`, 6000);
+    }
+  }
+
+  #confirmUninstall(item) {
+    this.dialog.open({
+      title: `¿Desinstalar ${item.name}?`,
+      hint: 'Se borran la app y sus datos guardados. No se puede deshacer.',
+      fields: [],
+      submitLabel: 'Sí, desinstalar',
+      onSubmit: async () => {
+        await uninstallApp(item.appId);
+        await this.#loadInstalledApps();
+        toast(`Desinstalada: ${item.name}`);
+        return null;
+      },
+    });
+  }
+
   // ------------------------------------------------ menú de tarjetas
 
   /** Doble pulsación sobre una tarjeta: cambiar la foto del icono o eliminarla. */
@@ -6117,6 +7655,28 @@ class WebBoxOS {
           toast(`Icono original: ${item.name}`);
         },
       });
+    }
+    if (item.installed) {
+      actions.push({
+        id: 'favorite',
+        label: item.favorite ? 'Quitar de favoritas' : 'Marcar como favorita',
+        icon: 'star',
+        onSelect: async () => {
+          await setFavorite(item.appId, !item.favorite);
+          await this.#loadInstalledApps();
+        },
+      });
+      if (api.canEdit) {
+        actions.push({
+          id: 'uninstall',
+          label: 'Desinstalar app',
+          icon: 'trash',
+          danger: true,
+          onSelect: () => setTimeout(() => this.#confirmUninstall(item), 0),
+        });
+      }
+      this.cardMenu.open({ title: item.name, subtitle: `Versión ${item.meta.version} · ${Math.max(1, Math.round(item.meta.size / 1024))} KB`, actions });
+      return;
     }
     actions.push({
       id: 'delete',
@@ -6199,6 +7759,10 @@ class WebBoxOS {
   // ------------------------------------------------------- bibliotecas
 
   #openAddDialog(lib, { category = '' } = {}) {
+    if (!api.canEdit) {
+      toast('Solo el administrador puede agregar contenido.');
+      return;
+    }
     const isMovies = lib.id === 'movies';
     const isSeries = lib.id === 'series';
     const isMusic = lib.id === 'music';
@@ -6319,27 +7883,34 @@ class WebBoxOS {
 
   // ---------------------------------------------------- servidor / base de datos
 
-  /** Pide la clave de administrador y la comprueba contra el servidor. */
-  #openServerKeyDialog() {
-    this.dialog.open({
-      title: 'Clave de administrador',
-      hint: 'La que escribiste en ADMIN_KEY (archivo .env del servidor). Se guarda solo en este navegador.',
-      fields: [{ key: 'key', label: 'Clave', type: 'password', placeholder: 'ADMIN_KEY' }],
-      submitLabel: 'Guardar',
-      onSubmit: async (values) => {
-        if (!values.key) return 'Escribe la clave.';
-        if (!api.online) return 'No hay conexión con el servidor.';
-        const previous = api.getKey();
-        api.setKey(values.key);
-        if (!(await api.checkKey())) {
-          api.setKey(previous);
-          return 'Clave incorrecta (o demasiados intentos: espera un minuto).';
-        }
-        toast('Clave correcta. Ya puedes agregar y eliminar.');
-        this.settings.rerender(true);
-        return null;
-      },
-    });
+  /** Al arrancar: comprueba el servidor, recupera la sesión y, si hace falta, pide iniciar sesión. */
+  async #bootAuth() {
+    await api.check();
+    await api.restoreSession();
+    this.#applyRole();
+    this.settings.refreshTabs();
+    if (api.needsLogin) this.accounts.showLogin();
+  }
+
+  /** Cambia lo que se ve según quién entró (administrador, usuario o modo local). */
+  #applyRole() {
+    document.body.dataset.role = api.canEdit ? 'editor' : 'viewer';
+    const chip = $('#user-chip');
+    if (chip) {
+      chip.hidden = !api.user;
+      const name = api.user?.username ?? '';
+      $('#user-label').textContent = api.isAdmin && name.toLowerCase() !== 'admin' ? `${name} · admin` : name;
+      chip.title = api.user ? `Sesión: ${api.user.username}` : '';
+      chip.dataset.admin = api.isAdmin ? '1' : '0';
+    }
+  }
+
+  async #onSessionChange(kind) {
+    this.#applyRole();
+    this.settings.refreshTabs();
+    if (kind === 'password') return;
+    await this.#refreshServer(); // el catálogo depende de quién esté dentro
+    this.#applyRole();
   }
 
   /** Vuelve a consultar el servidor y refresca YouTube, Música y Películas. */
@@ -6392,7 +7963,7 @@ class WebBoxOS {
 
   async #playLibraryItem(item, lib, extra = {}) {
     this.music.pause();
-    const onDelete = (it) => this.#deleteItem(lib, it);
+    const onDelete = api.canEdit ? (it) => this.#deleteItem(lib, it) : undefined; // el usuario normal no elimina
     if (!item.fileHandleKey) {
       const episodes = lib.id === 'series' ? this.#episodesOf(item, lib) : undefined;
       this.player.open(item, { onDelete, episodes, returnFid: extra.returnFid });
@@ -6421,6 +7992,7 @@ class WebBoxOS {
   }
 
   async #addMovieFromFiles(entry, name) {
+    if (!api.canEdit) throw new Error('Solo el administrador puede agregar películas.');
     const token = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     const key = `movie:${token}`;
     // En IndexedDB guardamos una referencia simple; OPFS y carpetas del equipo
@@ -6483,8 +8055,21 @@ class WebBoxOS {
 
     $('#hints').hidden = !config.get('showHints');
 
+    this.#applyFont();
     this.#applyBackground();
     this.#tickClock();
+  }
+
+  /** Fuente del texto y de los títulos (Configuración > Fuente). */
+  #applyFont() {
+    const root = document.documentElement;
+    const text = fontById(config.get('font'));
+    const titleId = config.get('titleFont');
+    const title = titleId === 'same' ? null : fontById(titleId);
+    loadFonts([text, title]);
+    root.style.setProperty('--font', text.stack);
+    if (title) root.style.setProperty('--font-title', title.stack);
+    else root.style.removeProperty('--font-title');
   }
 
   async #applyBackground() {

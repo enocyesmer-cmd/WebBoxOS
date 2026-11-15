@@ -49,7 +49,7 @@ body {
   overflow: hidden;
   color: var(--text);
   background: var(--bg);
-  font-family: Inter, "Segoe UI", Roboto, "Helvetica Neue", system-ui, sans-serif;
+  font-family: var(--font, Inter, "Segoe UI", Roboto, "Helvetica Neue", system-ui, sans-serif);
   -webkit-font-smoothing: antialiased;
   user-select: none;
   -webkit-user-select: none;
@@ -481,4 +481,13 @@ kbd {
   .clock #clock-date {
     display: none;
   }
+}
+
+/* Fuente de los títulos (Configuración > Fuente). Por defecto, la misma del texto. */
+.screen-title,
+.row-title,
+.panel-title,
+.dialog-card h2,
+.locations-title {
+  font-family: var(--font-title, var(--font, inherit));
 }

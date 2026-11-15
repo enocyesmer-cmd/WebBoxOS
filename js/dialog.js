@@ -20,7 +20,10 @@ export class Dialog {
       if (e.key === 'Enter') {
         e.preventDefault();
         e.target.blur();
-        this.focus.move('down');
+        // En el último campo, Enter guarda; en los demás, pasa al siguiente.
+        const fields = this.el.querySelectorAll('.field');
+        if (e.target.closest('.field') === fields[fields.length - 1]) this.el.querySelector('[data-act="dlg-save"]')?.click();
+        else this.focus.move('down');
       } else if (e.key === 'Escape') {
         e.preventDefault();
         e.target.blur();
@@ -28,9 +31,15 @@ export class Dialog {
     });
   }
 
+  get locked() {
+    return Boolean(this.isOpen && this.spec?.locked);
+  }
+
   /**
    * @param {{title:string, hint?:string, fields:{key:string,label:string,type?:'text'|'password',placeholder?:string,value?:string}[],
-   *   submitLabel?:string, onSubmit:(values:object)=>Promise<string|null>|string|null}} spec
+   *   submitLabel?:string, onSubmit:(values:object)=>Promise<string|null>|string|null,
+   *   locked?:boolean, secondary?:{label:string, run:()=>void}}} spec
+   * `locked`: no se puede cerrar con Atrás/Inicio (pantalla de acceso); `secondary` reemplaza a Cancelar.
    */
   open(spec) {
     if (this.isOpen) return;
@@ -55,9 +64,16 @@ export class Dialog {
         <p class="dialog-error" data-error hidden></p>
         <div class="dialog-actions">
           <div class="btn" role="button" tabindex="-1" data-focusable data-zone="dialog" data-fid="dlg:save" data-act="dlg-save">${esc(spec.submitLabel ?? 'Guardar')}</div>
-          <div class="btn" role="button" tabindex="-1" data-focusable data-zone="dialog" data-fid="dlg:cancel" data-act="dlg-cancel">Cancelar</div>
+          ${
+            spec.secondary
+              ? `<div class="btn" role="button" tabindex="-1" data-focusable data-zone="dialog" data-fid="dlg:secondary" data-act="dlg-secondary">${esc(spec.secondary.label)}</div>`
+              : spec.locked
+                ? ''
+                : '<div class="btn" role="button" tabindex="-1" data-focusable data-zone="dialog" data-fid="dlg:cancel" data-act="dlg-cancel">Cancelar</div>'
+          }
         </div>
       </div>`;
+    this.el.classList.toggle('is-locked', Boolean(spec.locked)); // pantalla de acceso: fondo opaco
     this.el.hidden = false;
     this.isOpen = true;
     this.focus.clear();
@@ -77,7 +93,8 @@ export class Dialog {
 
   values() {
     const out = {};
-    for (const input of this.el.querySelectorAll('input')) out[input.name] = input.value.trim();
+    // Las contraseñas se envían tal cual (los espacios cuentan); el resto se recorta.
+    for (const input of this.el.querySelectorAll('input')) out[input.name] = input.type === 'password' ? input.value : input.value.trim();
     return out;
   }
 
@@ -95,6 +112,10 @@ export class Dialog {
       el.querySelector('input')?.focus();
     } else if (el.dataset.act === 'dlg-cancel') {
       this.close();
+    } else if (el.dataset.act === 'dlg-secondary') {
+      const { run } = this.spec.secondary;
+      this.close({ restore: false });
+      run();
     } else if (el.dataset.act === 'dlg-save') {
       if (this.busy) return;
       this.busy = true;

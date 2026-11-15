@@ -18,8 +18,46 @@ export function createMemoryStore() {
     artist: r.artist,
   });
 
+  // Cuentas (misma interfaz que en SQLite y MySQL)
+  const accounts = new Map();
+  let nextUserId = 1;
+  const toUser = (u) => ({ ...u });
+  const users = {
+    async count() {
+      return accounts.size;
+    },
+    async getByName(username) {
+      for (const u of accounts.values()) if (u.username === username) return toUser(u);
+      return null;
+    },
+    async getById(id) {
+      const u = accounts.get(id);
+      return u ? toUser(u) : null;
+    },
+    async list() {
+      return [...accounts.values()].map(toUser);
+    },
+    async create({ username, hash, role }) {
+      for (const u of accounts.values()) if (u.username === username) throw new DuplicateError('Ese usuario ya existe.');
+      const user = { id: nextUserId, username, hash, role, createdAt: new Date().toISOString() };
+      nextUserId += 1;
+      accounts.set(user.id, user);
+      return toUser(user);
+    },
+    async setPassword(id, hash) {
+      const u = accounts.get(id);
+      if (!u) return false;
+      u.hash = hash;
+      return true;
+    },
+    async remove(id) {
+      return accounts.delete(id);
+    },
+  };
+
   return {
     name: 'memory',
+    users,
 
     async list(kind = null) {
       return [...rows.values()].filter((r) => !kind || r.kind === kind).map(toItem);

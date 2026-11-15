@@ -66,8 +66,51 @@ export async function createSqliteStore(file) {
     del[kind] = db.prepare(`DELETE FROM ${table} WHERE id = ?`);
   }
 
+  // Cuentas de usuario (tabla "usuarios")
+  const toUser = (r) =>
+    r ? { id: Number(r.id), username: r.usuario, hash: r.clave_hash, role: r.rol, createdAt: r.creado_en } : null;
+  const userSql = {
+    count: db.prepare('SELECT COUNT(*) AS n FROM usuarios'),
+    byName: db.prepare('SELECT * FROM usuarios WHERE usuario = ?'),
+    byId: db.prepare('SELECT * FROM usuarios WHERE id = ?'),
+    all: db.prepare('SELECT * FROM usuarios ORDER BY id'),
+    insert: db.prepare('INSERT INTO usuarios (usuario, clave_hash, rol) VALUES (?, ?, ?)'),
+    setHash: db.prepare('UPDATE usuarios SET clave_hash = ? WHERE id = ?'),
+    del: db.prepare('DELETE FROM usuarios WHERE id = ?'),
+  };
+  const users = {
+    async count() {
+      return Number(userSql.count.get().n);
+    },
+    async getByName(username) {
+      return toUser(userSql.byName.get(username));
+    },
+    async getById(id) {
+      return toUser(userSql.byId.get(id));
+    },
+    async list() {
+      return userSql.all.all().map(toUser);
+    },
+    async create({ username, hash, role }) {
+      try {
+        const r = userSql.insert.run(username, hash, role);
+        return toUser(userSql.byId.get(Number(r.lastInsertRowid)));
+      } catch (err) {
+        if (/UNIQUE/i.test(String(err && err.message))) throw new DuplicateError('Ese usuario ya existe.');
+        throw err;
+      }
+    },
+    async setPassword(id, hash) {
+      return userSql.setHash.run(hash, id).changes > 0;
+    },
+    async remove(id) {
+      return userSql.del.run(id).changes > 0;
+    },
+  };
+
   return {
     name: 'sqlite',
+    users,
 
     async list(kind = null) {
       const kinds = kind ? [kind] : Object.keys(TABLES);

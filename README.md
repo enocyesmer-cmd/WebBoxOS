@@ -137,6 +137,13 @@ videos no permiten reproducirse fuera de YouTube (se avisa con un mensaje).
     css/                  main · launcher · navigation · settings · media · files · emulators
     js/main.js            arranque, router, overlay, reloj e integración de pantallas
     js/files.js           gestor de archivos, operaciones y selectores de destino
+    js/accounts.js        iniciar sesión, cambiar contraseña y gestión de usuarios
+    js/appRuntime.js      instalador de apps web (manifiesto, paquete, IndexedDB)
+    js/appHost.js         ejecuta una app instalada en un iframe aislado
+    js/core/zip.js        lector de ZIP sin dependencias
+    js/core/appDoc.js     reescribe el HTML de la app y le inyecta la API WebBox
+    js/data/fonts.js      fuentes de letra disponibles
+    server/auth.js        contraseñas (scrypt) y sesiones firmadas
     js/emulators.js       selector de consolas, biblioteca de ROM y emuladores (EmulatorJS)
     js/data/consoles.js   consolas disponibles: núcleo y extensiones
     js/fileSystem.js      adaptadores de File System Access, OPFS e IndexedDB
@@ -248,22 +255,22 @@ El archivo `.sqlite` es binario y **no se sube a git** (da conflictos). Lo que s
 4. Tras un `git pull`, reinicia `npm start` si estaba abierto.
 
 ### En Render (SQLite)
-- Variables: `NODE_VERSION=22` y `ADMIN_KEY=<tu clave larga>`. Build: `npm install`. Start: `npm start`.
+- Variables: `NODE_VERSION=22`, `ADMIN_USER`, `ADMIN_PASSWORD` y `SESSION_SECRET=<cadena larga>` (ver "Cuentas y roles"). Build: `npm install`. Start: `npm start`.
 - Al arrancar, el servidor carga `database/catalogo.json` en la base (solo agrega). Así, aunque el plan gratis borre el disco al reiniciar, tu catálogo vuelve. Lo que agregues desde la web en Render se pierde al reiniciar si no lo pasas a `catalogo.json` y lo subes a GitHub.
 - Con un Disk de pago montado en `/var/data`, agrega `SQLITE_FILE=/var/data/webbox.sqlite` y los datos persisten.
 - `SEMBRAR=0` desactiva la carga automática.
 
 ## Base de datos MySQL y servidor
 
-El catálogo (videos de YouTube, música y películas) puede vivir en MySQL y ser **común para todos los usuarios**: todos lo leen; solo quien tenga la clave de administrador agrega o elimina. Sin servidor, la web sigue funcionando como antes con el almacenamiento del navegador.
+El catálogo (videos de YouTube, música y películas) puede vivir en MySQL y ser **común para todos los usuarios**: todos los que inicien sesión lo ven; solo el administrador agrega o elimina. Sin servidor, la web sigue funcionando como antes con el almacenamiento del navegador.
 
 ### Puesta en marcha
 1. Instala **Node.js 18+** y **MySQL 8** (o MariaDB 10.5+).
 2. Crea la base y la tabla: `mysql -u root -p < database/schema.sql`
 3. Edita la clave en `database/crear_usuario.sql` (`CAMBIA_ESTA_CLAVE`) y ejecútalo: `mysql -u root -p < database/crear_usuario.sql` (usuario `webbox`, solo SELECT/INSERT/DELETE).
-4. Copia `.env.example` a `.env` y completa `ADMIN_KEY` (clave larga) y `DB_PASSWORD` (la del paso 3).
+4. Copia `.env.example` a `.env` y completa `ADMIN_USER`, `ADMIN_PASSWORD`, `SESSION_SECRET` y `DB_PASSWORD` (la del paso 3).
 5. `npm install` y luego `npm start`. Abre `http://localhost:8080`.
-6. En la web: **Configuración > Servidor > Clave de administrador**. Ahí también puedes subir lo que ya tenías guardado en el navegador.
+6. En la web, inicia sesión como administrador. En **Configuración > Servidor** puedes subir lo que ya tenías guardado en el navegador.
 
 Otros usuarios en tu red entran con la dirección LAN que imprime el servidor. Para internet, ponlo detrás de HTTPS (la clave viaja en una cabecera).
 
@@ -277,3 +284,63 @@ La base de datos guarda solo **enlaces y metadatos**, nunca archivos de video, a
 
 ### Pruebas
 `npm test` (lógica + API con almacén en memoria). `python3 tools/build.py` regenera `js/bundle.js`.
+
+## Cuentas y roles (login)
+
+Con el servidor en marcha (`npm start`), WebBox OS pide **iniciar sesión** antes de mostrar nada.
+Sin servidor (GitHub Pages, doble clic) no hay cuentas: funciona en modo local, como antes.
+
+| Rol | Qué puede hacer |
+|---|---|
+| **Administrador** | Todo: agregar y eliminar películas, series, música y videos; instalar y desinstalar apps; crear usuarios, restablecer contraseñas y eliminarlos |
+| **Usuario** | Ver el catálogo y reproducir. No ve los botones de agregar/eliminar/instalar y el servidor los rechaza (403) aunque lo intente por otra vía |
+
+- **Primer arranque:** si no hay cuentas, el servidor crea el administrador con `ADMIN_USER` y
+  `ADMIN_PASSWORD` del `.env` (o, si falta, con `ADMIN_KEY` como contraseña). Cambia la contraseña
+  en **Configuración > Cuenta** y crea al resto en **Configuración > Usuarios** (solo se ve siendo admin).
+- Las contraseñas se guardan con **scrypt** y sal (nunca en claro). La sesión es un token firmado con
+  `SESSION_SECRET` (dura `SESSION_DAYS`, 30 por defecto); si borras al usuario o cambia su contraseña,
+  deja de valer al instante. Sin `SESSION_SECRET`, las sesiones se cierran al reiniciar.
+- 8 contraseñas incorrectas seguidas bloquean el acceso desde esa red durante un minuto.
+- `REQUIRE_LOGIN=0` deja ver el catálogo sin iniciar sesión (agregar sigue exigiendo ser admin).
+  `ALLOW_REGISTER=1` permite que cualquiera cree una cuenta **de usuario** desde la pantalla de acceso.
+- Base de datos: SQLite crea la tabla `usuarios` sola. **En MySQL** ejecuta de nuevo `database/schema.sql`
+  y `database/crear_usuario.sql` (agregan la tabla y sus permisos). *Esta parte no se pudo probar con un
+  MySQL real; SQLite y memoria sí.*
+- La cabecera `X-Admin-Key` (la clave antigua `ADMIN_KEY`) sigue funcionando como acceso de administrador
+  para scripts, pero la web ya no la usa.
+
+## Fuentes de letra
+
+**Configuración > Fuente**: elige la fuente del texto y, aparte, la de los títulos (por ejemplo letra de
+carta en los títulos y una fuente clara para el resto). Hay fuentes de lectura cómoda, de **letra de carta**
+(Dancing Script, Great Vibes, Parisienne, Allura, Alex Brush, Sacramento, Satisfy, Pacifico, Caveat,
+Homemade Apple), elegantes con serifa y otras. Se descargan de Google Fonts al elegirlas (necesitan
+Internet la primera vez); sin conexión se usa una parecida del sistema. Para agregar más, edita `js/data/fonts.js`.
+
+## Aplicaciones instaladas (apps web)
+
+**Aplicaciones > Instalar app** (o abre un `.zip` / `.apk` desde el Gestor de archivos). Solo el administrador instala.
+
+- **Paquete:** un ZIP con `app.json` y los archivos de la app. Ejemplo:
+
+      { "id": "mi-juego", "name": "Mi juego", "version": "1.0", "entry": "index.html",
+        "icon": "img/icon.png", "color": "#1e3a8a", "permissions": ["storage", "input"], "input": "launcher" }
+
+  `id` y `name` son obligatorios si hay app.json (el resto tiene valores por defecto). Un ZIP **sin**
+  app.json pero con `index.html` también se instala (nombre e id salen del nombre del archivo).
+  Un **APK hecho con Cordova o Capacitor** se instala extrayendo su carpeta web; un APK de Android nativo
+  se rechaza con un mensaje claro (un navegador no puede ejecutarlo).
+- **Dónde quedan:** archivos y datos en IndexedDB del navegador, con un espacio de datos separado por app.
+  Aparecen en Aplicaciones; con doble pulsación: **Marcar como favorita** o **Desinstalar**. Reinstalar el
+  mismo `id` la actualiza.
+- **Aislamiento:** cada app corre en un iframe sin `allow-same-origin`: no puede leer la sesión, el
+  almacenamiento ni los datos de WebBox OS ni de otras apps. Su `localStorage` es propio (guardado por app).
+- **SDK** (`window.WebBox`): `WebBox.exit()`, `WebBox.notify(texto)`, `WebBox.onInput(fn)` (acciones del mando:
+  up/down/left/right/ok/back/home, con el permiso `input`), `WebBox.storage.get/set/remove`.
+- **Salir:** Atrás/Esc cierran la app. Si declara `"input": "app"` (juegos que usan esos botones), Atrás/Esc se
+  le reenvían y se sale pulsando **Inicio dos veces**, con `WebBox.exit()` o con el botón "Salir" (mouse).
+- **Límites:** la app debe ser una sola página (sin módulos ES con `import` relativos ni enlaces entre páginas
+  HTML; empaquétala con Vite o esbuild). Un archivo de más de 8 MB enlazado directamente desde el HTML no
+  carga (pídelo con `fetch()`). Máximo 150 MB por paquete, 3000 archivos. Las apps que piden Internet lo
+  necesitan igual. No se pueden instalar apps nativas de Android ni programas de Windows.

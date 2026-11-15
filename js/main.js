@@ -13,6 +13,10 @@ import { Launcher } from './launcher.js';
 import { SettingsScreen } from './settings.js';
 import { LibraryScreen } from './library.js';
 import { api } from './api.js';
+import { fontById, loadFonts } from './data/fonts.js';
+import { Accounts } from './accounts.js';
+import { AppHost } from './appHost.js';
+import { listApps, installPackage, uninstallApp, setFavorite } from './appRuntime.js';
 import { Player } from './player.js';
 import { Dialog } from './dialog.js';
 import { FilesScreen } from './files.js';
@@ -67,12 +71,19 @@ class WebBoxOS {
       appsEl: this.screens.apps,
       onOpen: (item) => this.openItem(item),
       onMenu: (item) => this.#openCardMenu(item),
+      onInstall: () => this.#pickAppPackage(),
       onChooseLocation: (key) => this.#chooseLocation(key),
       getLocations: () => this.mediaFolders,
     });
     this.launcher.onRestored = () => this.#enterScreen(this.current);
     this.player = new Player({ el: $('#player'), focus: this.focus });
     this.dialog = new Dialog({ el: $('#dialog'), focus: this.focus });
+    this.appHost = new AppHost({ el: $('#apphost'), focus: this.focus });
+    this.accounts = new Accounts({
+      dialog: this.dialog,
+      onSessionChange: (kind) => this.#onSessionChange(kind),
+      onUsersChanged: () => this.settings?.loadUsers(),
+    });
     this.cardMenu = new CardMenu({ el: $('#cardmenu'), focus: this.focus });
     const common = {
       onPlay: (item, lib) => this.#playLibraryItem(item, lib),
@@ -160,6 +171,7 @@ class WebBoxOS {
         this.player.openFile(file);
       },
       onAddMovie: (entry, name) => this.#addMovieFromFiles(entry, name),
+      onInstallApp: (file) => this.#installFile(file),
     });
     // Música: misma biblioteca de enlaces de YouTube, mostrada como carrusel de portadas.
     this.musicLib = new LibraryScreen({
@@ -194,8 +206,8 @@ class WebBoxOS {
       focus: this.focus,
       gamepad: this.gamepad,
       onBackgroundMenu: (spec) => this.cardMenu.open(spec),
+      accounts: this.accounts,
       server: {
-        onSetKey: () => this.#openServerKeyDialog(),
         onRetry: () => this.#refreshServer(),
         onUpload: () => this.#uploadLocalItems(),
       },
@@ -221,6 +233,8 @@ class WebBoxOS {
     this.keyboard.start();
 
     this.navigate('home', { enter: true });
+    this.#bootAuth();
+    this.#loadInstalledApps();
     console.info('[WebBox OS] Launcher listo. Gamepad API:', this.gamepad.supported ? 'sí' : 'no');
   }
 
@@ -369,12 +383,13 @@ class WebBoxOS {
   }
 
   async back() {
+    if (this.appHost.requestExit('back')) return;
     if (this.cardMenu.isOpen) {
       this.cardMenu.close();
       return;
     }
     if (this.dialog.isOpen) {
-      this.dialog.close();
+      if (!this.dialog.locked) this.dialog.close(); // la pantalla de acceso no se cierra con Atrás
       return;
     }
     if (this.player.isOpen) {
@@ -401,7 +416,9 @@ class WebBoxOS {
   }
 
   home() {
+    if (this.appHost.isOpen && this.appHost.requestExit('home')) return;
     if (this.cardMenu.isOpen) this.cardMenu.close({ restore: false });
+    if (this.dialog.locked) return; // sin sesión no se puede ir a ninguna parte
     if (this.dialog.isOpen) this.dialog.close({ restore: false });
     if (this.player.isOpen) this.player.close({ restore: false });
     if (this.files?.viewerOpen) this.files.closeViewer({ restore: false });
@@ -418,6 +435,13 @@ class WebBoxOS {
 
   openItem(item) {
     if (this.overlayOpen) return;
+    // App instalada por el usuario: se ejecuta en su propio iframe aislado.
+    if (item.installed) {
+      this.launcher.recordRecent(item.id);
+      this.music.pause();
+      this.appHost.open(item.meta);
+      return;
+    }
     // Aplicaciones reales: abren su propia pantalla en vez de la simulación.
     if (item.screen) {
       if (item.kind === 'app') this.launcher.recordRecent(item.id);
@@ -469,6 +493,66 @@ class WebBoxOS {
     }
   }
 
+  // --------------------------------------------------- apps instaladas
+
+  async #loadInstalledApps() {
+    try {
+      this.launcher.setInstalledApps(await listApps());
+    } catch {
+      /* IndexedDB no disponible: simplemente no hay apps instaladas */
+    }
+  }
+
+  /** Abre el selector de archivos del sistema para elegir un .zip o .apk. */
+  #pickAppPackage() {
+    if (!api.canEdit) {
+      toast('Solo el administrador puede instalar apps.');
+      return;
+    }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.zip,.apk';
+    input.addEventListener('change', () => {
+      const [file] = input.files ?? [];
+      if (file) this.#installFile(file);
+    });
+    input.click();
+  }
+
+  async #installFile(file) {
+    if (!api.canEdit) {
+      toast('Solo el administrador puede instalar apps.');
+      return;
+    }
+    if (file.size > 150 * 1024 * 1024) {
+      toast('El paquete pesa más de 150 MB: es demasiado grande para instalarlo.', 4500);
+      return;
+    }
+    toast(`Instalando ${file.name}…`);
+    try {
+      const { app, updated } = await installPackage(await file.arrayBuffer(), file.name);
+      await this.#loadInstalledApps();
+      toast(`${updated ? 'Actualizada' : 'Instalada'}: ${app.name}. La encuentras en Aplicaciones.`, 4200);
+    } catch (err) {
+      toast(`No se pudo instalar: ${err?.message || 'paquete no válido'}`, 6000);
+    }
+  }
+
+  #confirmUninstall(item) {
+    this.dialog.open({
+      title: `¿Desinstalar ${item.name}?`,
+      hint: 'Se borran la app y sus datos guardados. No se puede deshacer.',
+      fields: [],
+      submitLabel: 'Sí, desinstalar',
+      onSubmit: async () => {
+        await uninstallApp(item.appId);
+        await this.#loadInstalledApps();
+        toast(`Desinstalada: ${item.name}`);
+        return null;
+      },
+    });
+  }
+
   // ------------------------------------------------ menú de tarjetas
 
   /** Doble pulsación sobre una tarjeta: cambiar la foto del icono o eliminarla. */
@@ -500,6 +584,28 @@ class WebBoxOS {
           toast(`Icono original: ${item.name}`);
         },
       });
+    }
+    if (item.installed) {
+      actions.push({
+        id: 'favorite',
+        label: item.favorite ? 'Quitar de favoritas' : 'Marcar como favorita',
+        icon: 'star',
+        onSelect: async () => {
+          await setFavorite(item.appId, !item.favorite);
+          await this.#loadInstalledApps();
+        },
+      });
+      if (api.canEdit) {
+        actions.push({
+          id: 'uninstall',
+          label: 'Desinstalar app',
+          icon: 'trash',
+          danger: true,
+          onSelect: () => setTimeout(() => this.#confirmUninstall(item), 0),
+        });
+      }
+      this.cardMenu.open({ title: item.name, subtitle: `Versión ${item.meta.version} · ${Math.max(1, Math.round(item.meta.size / 1024))} KB`, actions });
+      return;
     }
     actions.push({
       id: 'delete',
@@ -582,6 +688,10 @@ class WebBoxOS {
   // ------------------------------------------------------- bibliotecas
 
   #openAddDialog(lib, { category = '' } = {}) {
+    if (!api.canEdit) {
+      toast('Solo el administrador puede agregar contenido.');
+      return;
+    }
     const isMovies = lib.id === 'movies';
     const isSeries = lib.id === 'series';
     const isMusic = lib.id === 'music';
@@ -702,27 +812,34 @@ class WebBoxOS {
 
   // ---------------------------------------------------- servidor / base de datos
 
-  /** Pide la clave de administrador y la comprueba contra el servidor. */
-  #openServerKeyDialog() {
-    this.dialog.open({
-      title: 'Clave de administrador',
-      hint: 'La que escribiste en ADMIN_KEY (archivo .env del servidor). Se guarda solo en este navegador.',
-      fields: [{ key: 'key', label: 'Clave', type: 'password', placeholder: 'ADMIN_KEY' }],
-      submitLabel: 'Guardar',
-      onSubmit: async (values) => {
-        if (!values.key) return 'Escribe la clave.';
-        if (!api.online) return 'No hay conexión con el servidor.';
-        const previous = api.getKey();
-        api.setKey(values.key);
-        if (!(await api.checkKey())) {
-          api.setKey(previous);
-          return 'Clave incorrecta (o demasiados intentos: espera un minuto).';
-        }
-        toast('Clave correcta. Ya puedes agregar y eliminar.');
-        this.settings.rerender(true);
-        return null;
-      },
-    });
+  /** Al arrancar: comprueba el servidor, recupera la sesión y, si hace falta, pide iniciar sesión. */
+  async #bootAuth() {
+    await api.check();
+    await api.restoreSession();
+    this.#applyRole();
+    this.settings.refreshTabs();
+    if (api.needsLogin) this.accounts.showLogin();
+  }
+
+  /** Cambia lo que se ve según quién entró (administrador, usuario o modo local). */
+  #applyRole() {
+    document.body.dataset.role = api.canEdit ? 'editor' : 'viewer';
+    const chip = $('#user-chip');
+    if (chip) {
+      chip.hidden = !api.user;
+      const name = api.user?.username ?? '';
+      $('#user-label').textContent = api.isAdmin && name.toLowerCase() !== 'admin' ? `${name} · admin` : name;
+      chip.title = api.user ? `Sesión: ${api.user.username}` : '';
+      chip.dataset.admin = api.isAdmin ? '1' : '0';
+    }
+  }
+
+  async #onSessionChange(kind) {
+    this.#applyRole();
+    this.settings.refreshTabs();
+    if (kind === 'password') return;
+    await this.#refreshServer(); // el catálogo depende de quién esté dentro
+    this.#applyRole();
   }
 
   /** Vuelve a consultar el servidor y refresca YouTube, Música y Películas. */
@@ -775,7 +892,7 @@ class WebBoxOS {
 
   async #playLibraryItem(item, lib, extra = {}) {
     this.music.pause();
-    const onDelete = (it) => this.#deleteItem(lib, it);
+    const onDelete = api.canEdit ? (it) => this.#deleteItem(lib, it) : undefined; // el usuario normal no elimina
     if (!item.fileHandleKey) {
       const episodes = lib.id === 'series' ? this.#episodesOf(item, lib) : undefined;
       this.player.open(item, { onDelete, episodes, returnFid: extra.returnFid });
@@ -804,6 +921,7 @@ class WebBoxOS {
   }
 
   async #addMovieFromFiles(entry, name) {
+    if (!api.canEdit) throw new Error('Solo el administrador puede agregar películas.');
     const token = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     const key = `movie:${token}`;
     // En IndexedDB guardamos una referencia simple; OPFS y carpetas del equipo
@@ -866,8 +984,21 @@ class WebBoxOS {
 
     $('#hints').hidden = !config.get('showHints');
 
+    this.#applyFont();
     this.#applyBackground();
     this.#tickClock();
+  }
+
+  /** Fuente del texto y de los títulos (Configuración > Fuente). */
+  #applyFont() {
+    const root = document.documentElement;
+    const text = fontById(config.get('font'));
+    const titleId = config.get('titleFont');
+    const title = titleId === 'same' ? null : fontById(titleId);
+    loadFonts([text, title]);
+    root.style.setProperty('--font', text.stack);
+    if (title) root.style.setProperty('--font-title', title.stack);
+    else root.style.removeProperty('--font-title');
   }
 
   async #applyBackground() {

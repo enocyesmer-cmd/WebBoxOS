@@ -68,6 +68,10 @@
           <div class="chip" id="input-chip" title="Último dispositivo de entrada usado">
             <span class="chip-text">Entrada: <b id="last-input">—</b></span>
           </div>
+          <div class="chip" id="user-chip" hidden>
+            <span class="chip-icon" data-icon="star"></span>
+            <span class="chip-text" id="user-label"></span>
+          </div>
           <div class="chip" id="pad-chip">
             <span class="dot"></span>
             <span class="chip-icon" data-icon="gamepad"></span>
@@ -106,6 +110,7 @@
   <div id="overlay" hidden></div>
   <div id="player" hidden></div>
   <div id="file-viewer" hidden></div>
+  <div id="apphost" hidden></div>
   <div id="dialog" hidden></div>
   <div id="cardmenu" hidden></div>
   <div id="toasts" aria-live="polite"></div>

@@ -40,3 +40,18 @@ CREATE TABLE IF NOT EXISTS items (
 
 -- Si ya tenías la tabla creada antes de existir las Series, ejecuta una sola vez:
 --   ALTER TABLE items MODIFY kind ENUM('youtube', 'music', 'movies', 'series') NOT NULL;
+
+-- Cuentas de usuario. Guarda solo el hash (scrypt) de la contraseña, nunca la contraseña.
+-- rol: admin (agrega/elimina contenido y gestiona usuarios) o user (solo ve y reproduce).
+-- Si ya tenías la base creada, ejecuta este bloque una vez y vuelve a ejecutar crear_usuario.sql.
+CREATE TABLE IF NOT EXISTS usuarios (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  usuario    VARCHAR(32)  NOT NULL,
+  clave_hash VARCHAR(255) NOT NULL,
+  rol        ENUM('admin', 'user') NOT NULL DEFAULT 'user',
+  creado_en  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_usuarios_usuario (usuario)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_unicode_ci;

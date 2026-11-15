@@ -42,3 +42,13 @@ CREATE TABLE IF NOT EXISTS series (
   artista   TEXT NOT NULL DEFAULT '',
   creado_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Cuentas de usuario. "clave_hash" guarda solo el hash (scrypt): la contraseña no se puede recuperar.
+-- rol: admin (agrega y elimina contenido, gestiona usuarios) o user (solo ve y reproduce).
+CREATE TABLE IF NOT EXISTS usuarios (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  usuario    TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  clave_hash TEXT NOT NULL,
+  rol        TEXT NOT NULL DEFAULT 'user' CHECK (rol IN ('admin', 'user')),
+  creado_en  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

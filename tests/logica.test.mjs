@@ -408,4 +408,141 @@ await test('la casilla de Aplicaciones abre Emuladores', () => {
   assert.equal(APPS.find((app) => app.id === 'games')?.screen, 'emulators');
 });
 
+
+// ---------- Apps instaladas: ZIP, manifiesto y documento
+const { deflateRawSync } = await import('node:zlib');
+const { readZipDirectory, extractEntry, safePath, crc32 } = await import(`${ROOT}/core/zip.js`);
+const { validateManifest, findPackageRoot, readPackage, slugify, mimeFor, lighten } = await import(`${ROOT}/appRuntime.js`);
+const { resolveRef, shimSource } = await import(`${ROOT}/core/appDoc.js`);
+
+/** Crea un ZIP en memoria: files = [{name, data, store?}] */
+function makeZip(files) {
+  const local = [];
+  const central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = Buffer.from(f.name);
+    const raw = Buffer.from(f.data);
+    const body = f.store ? raw : deflateRawSync(raw);
+    const crc = crc32(raw);
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x0800, 6);
+    lh.writeUInt16LE(f.store ? 0 : 8, 8); lh.writeUInt32LE(crc, 14);
+    lh.writeUInt32LE(body.length, 18); lh.writeUInt32LE(raw.length, 22); lh.writeUInt16LE(name.length, 26);
+    local.push(lh, name, body);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(0x0800, 8);
+    ch.writeUInt16LE(f.store ? 0 : 8, 10); ch.writeUInt32LE(crc, 16);
+    ch.writeUInt32LE(body.length, 20); ch.writeUInt32LE(raw.length, 24); ch.writeUInt16LE(name.length, 28);
+    ch.writeUInt32LE(offset, 42);
+    central.push(ch, name);
+    offset += 30 + name.length + body.length;
+  }
+  const cd = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
+  return new Uint8Array(Buffer.concat([...local, cd, end]));
+}
+const text = (bytes) => new TextDecoder().decode(bytes);
+const goodApp = (extra = []) => [
+  { name: 'app.json', data: JSON.stringify({ id: 'mi-juego', name: 'Mi juego', version: '1.2', color: '#1e3a8a', permissions: ['storage', 'input'] }) },
+  { name: 'index.html', data: '<!doctype html><title>x</title>' },
+  { name: 'js/main.js', data: 'console.log("hola".repeat(500))' },
+  ...extra,
+];
+
+await test('zip: rutas seguras (sin "..", sin absolutas, sin unidades)', () => {
+  assert.equal(safePath('a/b/../c.js'), null);
+  assert.equal(safePath('../x'), null);
+  assert.equal(safePath('/etc/passwd'), null);
+  assert.equal(safePath('C:\\x.txt'), null);
+  assert.equal(safePath('a\\b\\c.js'), 'a/b/c.js');
+  assert.equal(safePath('./a//b.js'), 'a/b.js');
+  assert.equal(safePath(''), null);
+});
+await test('zip: lee archivos almacenados y comprimidos y verifica el CRC', async () => {
+  const zip = makeZip([{ name: 'a.txt', data: 'hola mundo', store: true }, { name: 'dir/b.txt', data: 'x'.repeat(2000) }]);
+  const entries = readZipDirectory(zip);
+  assert.deepEqual(entries.map((e) => e.path), ['a.txt', 'dir/b.txt']);
+  assert.equal(text(await extractEntry(zip, entries[0])), 'hola mundo');
+  assert.equal(text(await extractEntry(zip, entries[1])), 'x'.repeat(2000));
+  const bad = zip.slice();
+  bad[entries[0].offset + 30 + 5] ^= 0xff; // corrompe un byte del contenido
+  await assert.rejects(() => extractEntry(bad, entries[0]), /verificación|dañado/);
+});
+await test('zip: rechaza basura, cifrados y bombas de compresión', async () => {
+  assert.throws(() => readZipDirectory(new Uint8Array(100)), /ZIP/);
+  const enc = makeZip([{ name: 'a.txt', data: 'x', store: true }]);
+  const dv = new DataView(enc.buffer);
+  const cdOff = dv.getUint32(enc.length - 22 + 16, true);
+  dv.setUint16(cdOff + 8, 1, true); // bit de cifrado
+  assert.throws(() => readZipDirectory(enc), /cifrado/);
+  const bomb = makeZip([{ name: 'b.txt', data: 'a'.repeat(100000) }]);
+  const e = readZipDirectory(bomb)[0];
+  await assert.rejects(() => extractEntry(bomb, { ...e, size: 10 }), /más grande|tamaño/);
+});
+await test('manifiesto: acepta uno válido y completa valores por defecto', () => {
+  const r = validateManifest({ name: 'Mi App' }, new Set(['index.html']));
+  assert.equal(r.ok, true);
+  assert.deepEqual([r.manifest.id, r.manifest.entry, r.manifest.input, r.manifest.permissions], ['mi-app', 'index.html', 'launcher', ['storage']]);
+});
+await test('manifiesto: rechaza id, entrada, icono, color y permisos inválidos', () => {
+  const files = new Set(['index.html', 'icon.png']);
+  const base = { name: 'X', id: 'ok-app' };
+  for (const bad of [
+    { id: 'Mayúsculas' }, { id: 'a' }, { entry: '../index.html' }, { entry: 'nada.html' }, { entry: 'main.js' },
+    { icon: 'otra.png' }, { icon: 'index.html' }, { color: 'rojo' }, { permissions: ['camara'] }, { permissions: 'storage' }, { input: 'x' }, { name: 'x'.repeat(41) },
+  ]) assert.equal(validateManifest({ ...base, ...bad }, files).ok, false, JSON.stringify(bad));
+  assert.equal(validateManifest({ ...base, icon: 'icon.png', color: '#aabbcc' }, files).ok, true);
+});
+await test('paquete: busca app.json, index.html o la web de un APK (Cordova/Capacitor)', () => {
+  assert.deepEqual(findPackageRoot(['app.json', 'index.html']), { ok: true, root: '', kind: 'manifest' });
+  assert.deepEqual(findPackageRoot(['mi/app.json', 'mi/index.html', 'mi/x.js']), { ok: true, root: 'mi', kind: 'manifest' });
+  assert.deepEqual(findPackageRoot(['carpeta/index.html']), { ok: true, root: 'carpeta', kind: 'index' });
+  assert.equal(findPackageRoot(['a/b/c/index.html']).ok, false);
+  assert.deepEqual(findPackageRoot(['AndroidManifest.xml', 'assets/www/index.html', 'classes.dex'], 'x.apk'), { ok: true, root: 'assets/www', kind: 'apk-web' });
+  const native = findPackageRoot(['AndroidManifest.xml', 'classes.dex', 'lib/arm64/libgame.so'], 'juego.apk');
+  assert.equal(native.ok, false);
+  assert.match(native.error, /nativa/);
+});
+await test('paquete: instala un ZIP completo (con subcarpeta y basura de macOS) y devuelve sus archivos', async () => {
+  const zip = makeZip([
+    ...goodApp().map((f) => ({ ...f, name: `mi-juego/${f.name}` })),
+    { name: '__MACOSX/mi-juego/._index.html', data: 'basura' },
+    { name: 'mi-juego/.DS_Store', data: 'x' },
+  ]);
+  const pkg = await readPackage(zip, 'mi-juego.zip');
+  assert.equal(pkg.manifest.id, 'mi-juego');
+  assert.equal(pkg.manifest.name, 'Mi juego');
+  assert.deepEqual([...pkg.files.keys()].sort(), ['app.json', 'index.html', 'js/main.js']);
+  assert.equal(text(pkg.files.get('index.html')), '<!doctype html><title>x</title>');
+});
+await test('paquete: un ZIP sin app.json se instala con el nombre del archivo; los inválidos explican el error', async () => {
+  const pkg = await readPackage(makeZip([{ name: 'index.html', data: '<p>hi</p>' }]), 'Calculadora Pro.zip');
+  assert.deepEqual([pkg.manifest.id, pkg.manifest.name, pkg.source], ['calculadora-pro', 'Calculadora Pro', 'index']);
+  await assert.rejects(() => readPackage(makeZip([{ name: 'leeme.txt', data: 'x' }]), 'a.zip'), /app\.json ni index\.html/);
+  await assert.rejects(() => readPackage(makeZip([{ name: 'app.json', data: '{no json' }, { name: 'index.html', data: 'x' }]), 'a.zip'), /JSON/);
+  await assert.rejects(() => readPackage(makeZip([{ name: 'app.json', data: '{"id":"x","name":"X"}' }, { name: 'index.html', data: 'x' }]), 'a.zip'), /id/);
+});
+await test('apps: id por nombre, mime, y mezcla de color', () => {
+  assert.equal(slugify('Mi Súper Juego!'), 'mi-super-juego');
+  assert.equal(mimeFor('a/b.JS'), 'text/javascript');
+  assert.equal(mimeFor('x.desconocido'), 'application/octet-stream');
+  assert.equal(lighten('#000000', 0.5), '#808080');
+});
+await test('apps: rutas del HTML se resuelven dentro del paquete y las externas se ignoran', () => {
+  assert.equal(resolveRef('css/a.css', ''), 'css/a.css');
+  assert.equal(resolveRef('../img/x.png', 'pages'), 'img/x.png');
+  assert.equal(resolveRef('/img/x.png?v=2#a', 'pages'), 'img/x.png');
+  assert.equal(resolveRef('mi%20foto.png', 'a'), 'a/mi foto.png');
+  assert.equal(resolveRef('../../fuera.png', 'a'), null);
+  for (const ext of ['https://x.com/a.js', '//cdn.x.com/a.js', 'data:image/png;base64,AAA', 'blob:http://x/1', '#ancla', 'javascript:alert(1)']) assert.equal(resolveRef(ext), null, ext);
+});
+await test('apps: el script inyectado es JavaScript válido y no puede cerrar su <script>', () => {
+  const src = shimSource({ id: 'x', name: '</script><b>', data: { k: '</script>' }, files: {}, all: {}, base: '', persist: true, input: 'launcher' });
+  assert.doesNotThrow(() => new Function(src));
+  assert.ok(!src.includes('</script>'));
+});
+
 console.log(`\n${passed} pruebas correctas`);

@@ -13,6 +13,7 @@ import { createMysqlStore } from './store/mysql.js';
 import { createMemoryStore } from './store/memory.js';
 import { createSqliteStore } from './store/sqlite.js';
 import { importarCatalogo } from './catalogo.js';
+import { normalizeUsername, passwordProblem, hashPassword } from './auth.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const env = loadEnv(ROOT);
@@ -28,10 +29,16 @@ function fail(message) {
   process.exit(1);
 }
 
-if (!ADMIN_KEY) {
-  console.warn('⚠ ADMIN_KEY está vacía: se podrá ver el catálogo, pero NO agregar ni eliminar nada.');
-} else if (ADMIN_KEY.length < 8 || /cambia/i.test(ADMIN_KEY)) {
+const REQUIRE_LOGIN = env.REQUIRE_LOGIN !== '0'; // por defecto hay que iniciar sesión
+const ALLOW_REGISTER = env.ALLOW_REGISTER === '1';
+const SESSION_SECRET = env.SESSION_SECRET || '';
+const SESSION_DAYS = Number(env.SESSION_DAYS) > 0 ? Number(env.SESSION_DAYS) : 30;
+
+if (ADMIN_KEY && (ADMIN_KEY.length < 8 || /cambia/i.test(ADMIN_KEY))) {
   console.warn('⚠ ADMIN_KEY es débil o es la de ejemplo. Cámbiala en .env por una clave larga y propia.');
+}
+if (SESSION_SECRET.length < 16) {
+  console.warn('⚠ SESSION_SECRET no está definida (o es corta): las sesiones se cerrarán cada vez que reinicies el servidor.');
 }
 
 let store;
@@ -73,7 +80,43 @@ if (store.name === 'sqlite' && env.SEMBRAR !== '0') {
   }
 }
 
-const server = createServer(createApp({ store, adminKey: ADMIN_KEY, root: ROOT, log }));
+// Cuentas: si todavía no hay ninguna, se crea el administrador inicial con ADMIN_USER y
+// ADMIN_PASSWORD (o, si no existe, con ADMIN_KEY como contraseña). Después, se cambia desde la app.
+try {
+  if ((await store.users.count()) === 0) {
+    const username = normalizeUsername(env.ADMIN_USER || 'admin');
+    const password = env.ADMIN_PASSWORD || ADMIN_KEY;
+    if (!username) {
+      console.warn('⚠ ADMIN_USER no es válido (3 a 32 caracteres: letras, números, . _ -): no se creó el administrador.');
+    } else if (!password || passwordProblem(password)) {
+      console.warn(
+        '⚠ No hay ninguna cuenta y falta ADMIN_PASSWORD (mínimo 6 caracteres) en .env: nadie podrá iniciar sesión.\n' +
+          '  Escríbela en .env y reinicia: se creará el administrador automáticamente.',
+      );
+    } else {
+      await store.users.create({ username, hash: await hashPassword(password), role: 'admin' });
+      log(`Administrador inicial creado: usuario "${username}". Cambia su contraseña desde Configuración > Cuenta.`);
+    }
+  }
+} catch (err) {
+  fail(
+    `No se pudieron leer las cuentas de usuario: ${err.message}\n` +
+      '  Con MySQL ejecuta de nuevo database/schema.sql y database/crear_usuario.sql (tabla "usuarios").',
+  );
+}
+
+const server = createServer(
+  createApp({
+    store,
+    adminKey: ADMIN_KEY,
+    root: ROOT,
+    log,
+    sessionSecret: SESSION_SECRET,
+    requireLogin: REQUIRE_LOGIN,
+    allowRegister: ALLOW_REGISTER,
+    sessionDays: SESSION_DAYS,
+  }),
+);
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') fail(`El puerto ${PORT} ya está en uso. Cambia PORT en .env.`);
@@ -81,7 +124,7 @@ server.on('error', (err) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`\nWebBox OS listo (base de datos: ${store.name})`);
+  console.log(`\nWebBox OS listo (base de datos: ${store.name}, inicio de sesión: ${REQUIRE_LOGIN ? 'obligatorio' : 'opcional'})`);
   console.log(`  Este equipo:  http://localhost:${PORT}`);
   for (const list of Object.values(networkInterfaces())) {
     for (const addr of list ?? []) {
